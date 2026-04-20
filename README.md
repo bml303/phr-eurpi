@@ -15,7 +15,7 @@ cargo install elf2uf2-rs
 
 ## Running from the host
 
-A [Raspberry Pi Debug Probe] (https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Once this is established and the Pico is connected all you need to do is
+A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Once this is established and the Pico is connected all you need to do is
 
 ```shell
 cargo run
