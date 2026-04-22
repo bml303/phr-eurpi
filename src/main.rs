@@ -3,7 +3,7 @@
 #![allow(async_fn_in_trait)]
 
 use cortex_m_rt::entry;
-use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
+//use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::Executor;
 use embassy_rp::{
@@ -32,6 +32,7 @@ use embedded_graphics::{
     prelude::*,
     text::{Baseline, Text},
 };
+use fixed_dsp::basic::sin_i16;
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -128,9 +129,9 @@ fn main() -> ! {
         .text_color(BinaryColor::On)
         .build();
 
-    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
+    // Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
+    //     .draw(&mut display)
+    //     .unwrap();
 
     Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
         .draw(&mut display)
@@ -160,6 +161,11 @@ fn main() -> ! {
 
     let (flash_uid_val, _flash_uid) = io::flash::check_flash(&mut flash);
     let board_id = utils::u64_to_hexstring(flash_uid_val);
+
+    Text::with_baseline(board_id.as_str(), Point::zero(), text_style, Baseline::Top)
+        .draw(&mut display)
+        .unwrap();
+    display.flush().unwrap();
 
     // // -- ---------------------------------------------------------------------
     // // -- ADC / Temperature resources
@@ -203,7 +209,9 @@ fn main() -> ! {
 
 #[embassy_executor::task]
 async fn core0_task() {
-    info!("Hello from core 0");
+    let x: i16 = 0x4000;
+    let y = sin_i16(x);
+    info!("Hello from core 0: sin_q15 = {}", y);
     loop {
         CHANNEL.send(LedState::On).await;
         Timer::after_millis(100).await;

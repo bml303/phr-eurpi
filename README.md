@@ -15,13 +15,13 @@ cargo install elf2uf2-rs
 
 ## Running from the host
 
-A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Once this is established and the Pico is connected all you need to do is
+A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Because teh UART0 pins are occupied by the OLED i2c0 bus it's not yet clarified how to connect the serial connection of the debug probe. Once this is sorted and the Pico is connected all you need to do is
 
 ```shell
 cargo run
 ```
 
-The code at this point in time is completely untested and running it might result in mild or even severe disappointment. If things go according to plan (which they never but even so) this will change in the forseeable future.
+The code at this point in time is tested and running but it does not do much except for showing the board id and a message on the OLED and blinking the LED. If things go according to plan (which they never but even so) more functionality will be added.
 
 ## Installing for prioduction
 
@@ -29,6 +29,6 @@ Once the code is ready to be run in production compile the release version and i
 
 ```shell
 cargo build --release --target=thumbv6m-none-eabi
-elf2uf2-rs ./target/thumbv6m-none-eabi/release/phr-rpcem
-cp ./target/thumbv6m-none-eabi/release/phr-rpcem.uf2 /media/$USERNAME/RPI-RP2
+elf2uf2-rs ./target/thumbv6m-none-eabi/release/phr-eurpi
+cp ./target/thumbv6m-none-eabi/release/phr-eurpi.uf2 /media/$USERNAME/RPI-RP2
 ```
