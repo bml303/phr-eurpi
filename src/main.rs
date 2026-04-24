@@ -7,13 +7,11 @@ use cortex_m_rt::entry;
 use defmt::*;
 use embassy_executor::Executor;
 use embassy_rp::{
-    // adc::{
-    //     Adc, Channel as AdcChannel,
-    //     Config as AdcConfig,
-    //     InterruptHandler as AdcInterruptHandler
-    // },
-    bind_interrupts,
-    dma,
+    adc::{
+        Adc, Async as AdcAsync, Channel as AdcChannel, Config as AdcConfig,
+        InterruptHandler as AdcInterruptHandler,
+    },
+    bind_interrupts, dma,
     flash::Flash,
     gpio::{Input, Level, Output, Pull},
     i2c::{self, Config},
@@ -27,12 +25,14 @@ use embassy_rp::{
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Delay, Timer};
 use embedded_graphics::{
-    mono_font::{MonoTextStyleBuilder, ascii::FONT_6X10},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
 use fixed_dsp::basic::sin_i16;
+use heapless::String;
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -51,6 +51,7 @@ use io::flash::FLASH_SIZE;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_DISPLAY_LINE_CHARS: usize = 32;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -74,14 +75,16 @@ bind_interrupts!(struct IrqsI2c1 {
 //     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH11>;
 // });
 
-// bind_interrupts!(struct IrqsAdc {
-//     ADC_IRQ_FIFO => AdcInterruptHandler;
-// });
+bind_interrupts!(struct IrqsAdc {
+    ADC_IRQ_FIFO => AdcInterruptHandler;
+});
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
-static CHANNEL: Channel<CriticalSectionRawMutex, LedState, 1> = Channel::new();
+//static CHANNEL: Channel<CriticalSectionRawMutex, LedState, 1> = Channel::new();
+
+static CHANNEL: Channel<CriticalSectionRawMutex, (u16, u16, u16), 10> = Channel::new();
 
 enum LedState {
     On,
@@ -129,15 +132,11 @@ fn main() -> ! {
         .text_color(BinaryColor::On)
         .build();
 
-    // Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
+    // Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
     //     .draw(&mut display)
     //     .unwrap();
 
-    Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-
-    display.flush().unwrap();
+    // display.flush().unwrap();
 
     // -- user keys
     let key1 = Input::new(p.PIN_15, Pull::None);
@@ -167,21 +166,21 @@ fn main() -> ! {
         .unwrap();
     display.flush().unwrap();
 
-    // // -- ---------------------------------------------------------------------
-    // // -- ADC / Temperature resources
-    // // -- ---------------------------------------------------------------------
+    // -- ---------------------------------------------------------------------
+    // -- ADC / Temperature resources
+    // -- ---------------------------------------------------------------------
 
-    // let adc = Adc::new(p.ADC, IrqsAdc, AdcConfig::default());
-    // let p26 = AdcChannel::new_pin(p.PIN_26, Pull::None);
-    // let p27 = AdcChannel::new_pin(p.PIN_27, Pull::None);
-    // let p28 = AdcChannel::new_pin(p.PIN_28, Pull::None);
-    // let ts = AdcChannel::new_temp_sensor(p.ADC_TEMP_SENSOR);
+    let adc = Adc::new(p.ADC, IrqsAdc, AdcConfig::default());
+    let p26 = AdcChannel::new_pin(p.PIN_26, Pull::None);
+    let p27 = AdcChannel::new_pin(p.PIN_27, Pull::None);
+    let p28 = AdcChannel::new_pin(p.PIN_28, Pull::None);
+    //let ts = AdcChannel::new_temp_sensor(p.ADC_TEMP_SENSOR);
 
     // -- ---------------------------------------------------------------------
     // -- LED
     // -- ---------------------------------------------------------------------
     //
-    let led = Output::new(p.PIN_25, Level::Low);
+    //let led = Output::new(p.PIN_25, Level::Low);
 
     // -- ---------------------------------------------------------------------
     // -- Core 1 task
@@ -194,7 +193,7 @@ fn main() -> ! {
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
-            executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(led))));
+            executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(display, text_style))));
         },
     );
 
@@ -204,29 +203,61 @@ fn main() -> ! {
 
     // -- run output task on core 0
     let executor0 = EXECUTOR0.init(Executor::new());
-    executor0.run(|spawner| spawner.spawn(unwrap!(core0_task())));
+    executor0.run(|spawner| spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28))));
 }
 
 #[embassy_executor::task]
-async fn core0_task() {
-    let x: i16 = 0x4000;
-    let y = sin_i16(x);
-    info!("Hello from core 0: sin_q15 = {}", y);
+async fn core0_task(
+    mut adc: Adc<'static, AdcAsync>,
+    mut p26: AdcChannel<'static>,
+    mut p27: AdcChannel<'static>,
+    mut p28: AdcChannel<'static>,
+) {
+    info!("Hello from core 0");
     loop {
-        CHANNEL.send(LedState::On).await;
+        let ain = adc.read(&mut p26).await.unwrap();
+        let kn1 = adc.read(&mut p27).await.unwrap();
+        let kn2 = adc.read(&mut p28).await.unwrap();
+        CHANNEL.send((ain, kn1, kn2)).await;
         Timer::after_millis(100).await;
-        CHANNEL.send(LedState::Off).await;
-        Timer::after_millis(400).await;
     }
 }
 
 #[embassy_executor::task]
-async fn core1_task(mut led: Output<'static>) {
+async fn core1_task(
+    mut display: Ssd1306<
+        I2CInterface<i2c::I2c<'static, I2C0, i2c::Async>>,
+        DisplaySize128x32,
+        BufferedGraphicsMode<DisplaySize128x32>,
+    >,
+    text_style: MonoTextStyle<'static, BinaryColor>,
+) {
     info!("Hello from core 1");
+    let p1 = Point::new(0, 16);
+    let p2 = Point::new(128, 32);
+    let style = PrimitiveStyleBuilder::new()
+        .fill_color(BinaryColor::Off)
+        .build();
     loop {
         match CHANNEL.receive().await {
-            LedState::On => led.set_high(),
-            LedState::Off => led.set_low(),
+            (ain, kn1, kn2) => {
+                let mut format_buf = [0u8; 64];
+                let level_text = format_no_std::show(
+                    &mut format_buf,
+                    format_args!("{} - {} - {}", ain, kn1, kn2),
+                )
+                .unwrap();
+                Rectangle::with_corners(p1, p2)
+                    .draw_styled(&style, &mut display)
+                    //.into_styled(text_style)
+                    //.draw(&mut display)
+                    .unwrap();
+                Text::with_baseline(level_text, Point::new(0, 16), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                display.flush().unwrap();
+            }
+            _ => {}
         }
     }
 }

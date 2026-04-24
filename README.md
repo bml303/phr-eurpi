@@ -19,7 +19,7 @@ A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcont
 
 ![EuroPi Debug Setup](./doc/EuroPi-Debug-Setup.jpeg)
 
-Once the hardware setup is completed and everythin is connected all you need to do is
+Once the hardware setup is completed and everything is connected all you need to do is
 
 ```shell
 cargo run
@@ -33,7 +33,7 @@ cargo run --release
 
 The `--release` flag is currently necessary because the compilation gets stuck while processing one of the crates related to `embedded-tls`. The root cause is unknown at this point in time. 
 
-The code is tested and runs but it does not do much except for showing the board id and a message on the OLED. The blinking of the LED works only with the non-WiFi version (Pi Pico) and it does not work with the Pi Pico W. If things go according to plan (which they never but even so) more functionality will be added in the forseeable future.
+The code is tested and runs but it does not do much except for showing the board id and the values of the analog input and knobs. If things go according to plan (which they never but even so) more functionality will be added in the forseeable future.
 
 ## Installing for productive use
 
