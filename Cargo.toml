@@ -31,6 +31,7 @@ embedded-hal-bus = { version = "0.3", features = ["async"] }
 embedded-io-async = { version = "0.7", features = ["defmt"] }
 embedded-sdmmc = "0.9"
 embedded-storage = { version = "0.3" }
+#embedded-tls = { version = "0.18.0", features = ["defmt", "log"], default-features = false }
 format_no_std = "1.2"
 #fundsp = { version = "0.23.0", default-features = false }
 #cute-dsp = { version = "0.0.40", default-features = false, features = ["alloc"] }

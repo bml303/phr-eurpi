@@ -15,15 +15,27 @@ cargo install elf2uf2-rs
 
 ## Running from the host
 
-A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Because teh UART0 pins are occupied by the OLED i2c0 bus it's not yet clarified how to connect the serial connection of the debug probe. Once this is sorted and the Pico is connected all you need to do is
+A [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) is required. Additionally it's best to use a [Pico Omnibus](https://shop.pimoroni.com/products/pico-omnibus?variant=32369533321299) to have access to all the pins, specifically the UART0 pins. Because the UART0 pins (board pin 1 and 2) are occupied by the OLED i2c0 bus the alternate pins (board pin 16 and 17) have to be used. Like this it's also easier to connect the i2c1 bus for peripherals. This setup is working and is recommended for prototyping / testing:
+
+![EuroPi Debug Setup](./doc/EuroPi-Debug-Setup.jpeg)
+
+Once the hardware setup is completed and everythin is connected all you need to do is
 
 ```shell
 cargo run
 ```
 
-The code at this point in time is tested and running but it does not do much except for showing the board id and a message on the OLED and blinking the LED. If things go according to plan (which they never but even so) more functionality will be added.
+If you want to use `embedded-tls`, you have to run it with the `--release` flag:
 
-## Installing for prioduction
+```shell
+cargo run --release
+```
+
+The `--release` flag is currently necessary because the compilation get stuck while processing one of the crates related to `embedded-tls`. The root cause is unknown at this point in time. 
+
+The code at this point in time is tested and running but it does not do much except for showing the board id and a message on the OLED. The blinking of the LED works only with the non-WiFi version (Pi Pico). It does not work with the Pi Pico W. If things go according to plan (which they never but even so) more functionality will be added in the forseeable future.
+
+## Installing for productive use
 
 Once the code is ready to be run in production compile the release version and install the u2f binary:
 
