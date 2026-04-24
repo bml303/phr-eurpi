@@ -31,9 +31,9 @@ If you want to use `embedded-tls`, you have to run it with the `--release` flag:
 cargo run --release
 ```
 
-The `--release` flag is currently necessary because the compilation get stuck while processing one of the crates related to `embedded-tls`. The root cause is unknown at this point in time. 
+The `--release` flag is currently necessary because the compilation gets stuck while processing one of the crates related to `embedded-tls`. The root cause is unknown at this point in time. 
 
-The code at this point in time is tested and running but it does not do much except for showing the board id and a message on the OLED. The blinking of the LED works only with the non-WiFi version (Pi Pico). It does not work with the Pi Pico W. If things go according to plan (which they never but even so) more functionality will be added in the forseeable future.
+The code is tested and runs but it does not do much except for showing the board id and a message on the OLED. The blinking of the LED works only with the non-WiFi version (Pi Pico) and it does not work with the Pi Pico W. If things go according to plan (which they never but even so) more functionality will be added in the forseeable future.
 
 ## Installing for productive use
 
