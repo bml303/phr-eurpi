@@ -29,7 +29,7 @@ use embassy_rp::{
     watchdog::*,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay, Duration, Timer};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
@@ -49,6 +49,7 @@ mod io;
 mod utils;
 
 use io::flash::FLASH_SIZE;
+use utils::Debouncer;
 
 // use task::{
 //     input_task, output_task, LogData, Ping, INIT_CHANNEL_CAPACITY, OUTPUT_CHANNEL_CAPACITY,
@@ -90,7 +91,8 @@ static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 //static CHANNEL: Channel<CriticalSectionRawMutex, LedState, 1> = Channel::new();
 
-static CHANNEL: Channel<CriticalSectionRawMutex, (u16, u16, u16), 10> = Channel::new();
+static CHANNEL: Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10> =
+    Channel::new();
 
 enum LedState {
     On,
@@ -217,6 +219,13 @@ fn main() -> ! {
     //let led = Output::new(p.PIN_25, Level::Low);
 
     // -- ---------------------------------------------------------------------
+    // -- Buttons
+    // -- ---------------------------------------------------------------------
+    //
+    let mut btn1 = Debouncer::new(Input::new(p.PIN_4, Pull::Up), Duration::from_millis(20));
+    let mut btn2 = Debouncer::new(Input::new(p.PIN_5, Pull::Up), Duration::from_millis(20));
+
+    // -- ---------------------------------------------------------------------
     // -- PIO task(s)
     // -- ---------------------------------------------------------------------
 
@@ -252,7 +261,7 @@ fn main() -> ! {
     // -- run output task on core 0
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28)));
+        spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28, btn1, btn2)));
         spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)))
     });
 }
@@ -272,13 +281,17 @@ async fn core0_task(
     mut p26: AdcChannel<'static>,
     mut p27: AdcChannel<'static>,
     mut p28: AdcChannel<'static>,
+    mut btn1: Debouncer<'static>,
+    mut btn2: Debouncer<'static>,
 ) {
     info!("Hello from core 0");
     loop {
         let ain = adc.read(&mut p26).await.unwrap();
         let kn1 = adc.read(&mut p27).await.unwrap();
         let kn2 = adc.read(&mut p28).await.unwrap();
-        CHANNEL.send((ain, kn1, kn2)).await;
+        let btn1_lvl = btn1.level().await;
+        let btn2_lvl = btn2.level().await;
+        CHANNEL.send((ain, kn1, kn2, btn1_lvl, btn2_lvl)).await;
         Timer::after_millis(100).await;
     }
 }
@@ -300,11 +313,19 @@ async fn core1_task(
         .build();
     loop {
         match CHANNEL.receive().await {
-            (ain, kn1, kn2) => {
+            (ain, kn1, kn2, btn1_lvl, btn2_lvl) => {
+                let btn1_lvl = match btn1_lvl {
+                    Level::High => "+",
+                    Level::Low => "-",
+                };
+                let btn2_lvl = match btn2_lvl {
+                    Level::High => "+",
+                    Level::Low => "-",
+                };
                 let mut format_buf = [0u8; 64];
                 let level_text = format_no_std::show(
                     &mut format_buf,
-                    format_args!("{} - {} - {}", ain, kn1, kn2),
+                    format_args!("{} {} {} {} {}", ain, btn1_lvl, kn1, btn2_lvl, kn2),
                 )
                 .unwrap();
                 Rectangle::with_corners(p1, p2)
@@ -317,7 +338,6 @@ async fn core1_task(
                     .unwrap();
                 display.flush().unwrap();
             }
-            _ => {}
         }
     }
 }

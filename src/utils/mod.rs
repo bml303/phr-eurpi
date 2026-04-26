@@ -1,5 +1,7 @@
-use defmt::*;
 use heapless::String;
+mod debouncer;
+
+pub use debouncer::Debouncer;
 
 pub fn half_byte_to_char(half_byte: u8) -> char {
     match half_byte & 0xf {
