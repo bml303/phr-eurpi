@@ -7,6 +7,7 @@ use cortex_m_rt::entry;
 use defmt::*;
 use embassy_executor::Executor;
 use embassy_rp::{
+    Peri,
     adc::{
         Adc, Async as AdcAsync, Channel as AdcChannel, Config as AdcConfig,
         InterruptHandler as AdcInterruptHandler,
@@ -17,7 +18,12 @@ use embassy_rp::{
     i2c::{self, Config},
     multicore::{Stack, spawn_core1},
     peripherals::{DMA_CH0, DMA_CH1, DMA_CH11, I2C0, I2C1, PIO0},
-    pio::{InterruptHandler, Pio},
+    pio::{
+        Common, Config as PioConfig, Direction as PioPinDirection, InterruptHandler,
+        InterruptHandler as PioInterruptHandler, Irq, Pio, PioPin, ShiftDirection, StateMachine,
+        program::pio_asm,
+    },
+    pio_programs::clock_divider::calculate_pio_clock_divider,
     rtc::Rtc,
     spi::{self, Spi},
     watchdog::*,
@@ -51,7 +57,7 @@ use io::flash::FLASH_SIZE;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const MAX_DISPLAY_LINE_CHARS: usize = 32;
+const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -89,6 +95,34 @@ static CHANNEL: Channel<CriticalSectionRawMutex, (u16, u16, u16), 10> = Channel:
 enum LedState {
     On,
     Off,
+}
+
+fn setup_pio_task_sm0<'d>(
+    pio: &mut Common<'d, PIO0>,
+    sm: &mut StateMachine<'d, PIO0, 0>,
+    pin: Peri<'d, impl PioPin>,
+) {
+    // Setup sm0
+
+    // Send data serially to pin
+    let prg = pio_asm!(
+        ".origin 0",
+        ".wrap_target",
+        "wait 0 pin 0",
+        "wait 1 pin 0",
+        "irq 3",
+        ".wrap",
+    );
+
+    let mut cfg = PioConfig::default();
+    cfg.use_program(&pio.load_program(&prg.program), &[]);
+    let in_pin = pio.make_pio_pin(pin);
+    cfg.set_in_pins(&[&in_pin]);
+    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_48_KHZ);
+    cfg.shift_in.auto_fill = true;
+    cfg.shift_in.direction = ShiftDirection::Right;
+    sm.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
+    sm.set_config(&cfg);
 }
 
 //#[embassy_executor::main]
@@ -183,6 +217,20 @@ fn main() -> ! {
     //let led = Output::new(p.PIN_25, Level::Low);
 
     // -- ---------------------------------------------------------------------
+    // -- PIO task(s)
+    // -- ---------------------------------------------------------------------
+
+    let pio = p.PIO0;
+
+    let Pio {
+        mut common,
+        irq3,
+        mut sm0,
+        ..
+    } = Pio::new(pio, IrqsPioSpiAndFlash);
+    setup_pio_task_sm0(&mut common, &mut sm0, p.PIN_22);
+
+    // -- ---------------------------------------------------------------------
     // -- Core 1 task
     // -- ---------------------------------------------------------------------
 
@@ -203,7 +251,19 @@ fn main() -> ! {
 
     // -- run output task on core 0
     let executor0 = EXECUTOR0.init(Executor::new());
-    executor0.run(|spawner| spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28))));
+    executor0.run(|spawner| {
+        spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28)));
+        spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)))
+    });
+}
+
+#[embassy_executor::task]
+async fn pio_task_sm0(mut irq: Irq<'static, PIO0, 3>, mut sm: StateMachine<'static, PIO0, 0>) {
+    sm.set_enable(true);
+    loop {
+        irq.wait().await;
+        info!("IRQ trigged");
+    }
 }
 
 #[embassy_executor::task]
