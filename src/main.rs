@@ -17,13 +17,16 @@ use embassy_rp::{
     gpio::{Input, Level, Output, Pull},
     i2c::{self, Config},
     multicore::{Stack, spawn_core1},
-    peripherals::{DMA_CH0, DMA_CH1, DMA_CH11, I2C0, I2C1, PIO0},
+    peripherals::{DMA_CH0, DMA_CH1, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, InterruptHandler,
         InterruptHandler as PioInterruptHandler, Irq, Pio, PioPin, ShiftDirection, StateMachine,
         program::pio_asm,
     },
-    pio_programs::clock_divider::calculate_pio_clock_divider,
+    pio_programs::{
+        clock_divider::calculate_pio_clock_divider,
+        pwm::{PioPwm, PioPwmProgram},
+    },
     rtc::Rtc,
     spi::{self, Spi},
     watchdog::*,
@@ -59,6 +62,7 @@ use utils::Debouncer;
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
+const PWM_REFRESH_INTERVAL: u64 = 100_000;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -68,6 +72,10 @@ bind_interrupts!(struct IrqsRtc {
 bind_interrupts!(struct IrqsPioSpiAndFlash {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH11>;
+});
+
+bind_interrupts!(struct IrqsPio1 {
+    PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
 bind_interrupts!(struct IrqsI2c0 {
@@ -226,7 +234,7 @@ fn main() -> ! {
     let mut btn2 = Debouncer::new(Input::new(p.PIN_5, Pull::Up), Duration::from_millis(20));
 
     // -- ---------------------------------------------------------------------
-    // -- PIO task(s)
+    // -- PIO task(s) for digital input
     // -- ---------------------------------------------------------------------
 
     let pio = p.PIO0;
@@ -238,6 +246,37 @@ fn main() -> ! {
         ..
     } = Pio::new(pio, IrqsPioSpiAndFlash);
     setup_pio_task_sm0(&mut common, &mut sm0, p.PIN_22);
+
+    // -- ---------------------------------------------------------------------
+    // -- PIO task(s) for digital output
+    // -- ---------------------------------------------------------------------
+
+    let Pio {
+        mut common,
+        sm1,
+        sm2,
+        sm3,
+        ..
+    } = Pio::new(p.PIO1, IrqsPio1);
+
+    let prg = PioPwmProgram::new(&mut common);
+    let mut pwm_pio_out1 = PioPwm::new(&mut common, sm1, p.PIN_21, &prg);
+    pwm_pio_out1.set_period(core::time::Duration::from_micros(1000));
+    //pwm_pio_out1.set_level(12575);
+    pwm_pio_out1.write(core::time::Duration::from_micros(970));
+    pwm_pio_out1.start();
+
+    let mut pwm_pio_out2 = PioPwm::new(&mut common, sm2, p.PIN_20, &prg);
+    pwm_pio_out2.set_period(core::time::Duration::from_micros(1000));
+    //pwm_pio_out2.set_level(31625);
+    pwm_pio_out2.write(core::time::Duration::from_micros(670));
+    pwm_pio_out2.start();
+
+    let mut pwm_pio_out3 = PioPwm::new(&mut common, sm3, p.PIN_16, &prg);
+    pwm_pio_out3.set_period(core::time::Duration::from_micros(1000));
+    //pwm_pio_out3.set_level(50525);
+    pwm_pio_out3.write(core::time::Duration::from_micros(270));
+    pwm_pio_out3.start();
 
     // -- ---------------------------------------------------------------------
     // -- Core 1 task
