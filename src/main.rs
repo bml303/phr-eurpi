@@ -104,9 +104,7 @@ fn setup_pio_task_sm0<'d>(
     sm: &mut StateMachine<'d, PIO0, 0>,
     pin: Peri<'d, impl PioPin>,
 ) {
-    // Setup sm0
-
-    // Send data serially to pin
+    // -- read digital input triggers
     let prg = pio_asm!(
         ".origin 0",
         ".wrap_target",
@@ -115,7 +113,7 @@ fn setup_pio_task_sm0<'d>(
         "irq 3",
         ".wrap",
     );
-
+    // -- setup sm0
     let mut cfg = PioConfig::default();
     cfg.use_program(&pio.load_program(&prg.program), &[]);
     let in_pin = pio.make_pio_pin(pin);
