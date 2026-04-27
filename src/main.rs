@@ -32,7 +32,7 @@ use embassy_rp::{
     watchdog::*,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::{Delay, Duration, Ticker, Timer};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
@@ -62,7 +62,10 @@ use utils::Debouncer;
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
+const CLOCK_DIVIDER_2_KHZ: u32 = 2_000;
+const CYCLE_400_HZ: u16 = 400;
 const PWM_REFRESH_INTERVAL: u64 = 100_000;
+const TICKER_EVERY_2500_MICROS: u64 = 2500;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -99,8 +102,15 @@ static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 //static CHANNEL: Channel<CriticalSectionRawMutex, LedState, 1> = Channel::new();
 
-static CHANNEL: Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10> =
+static CHANNEL_CORES: Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10> =
     Channel::new();
+
+static CHANNEL_OUT1: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
+static CHANNEL_OUT2: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
+static CHANNEL_OUT3: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
+static CHANNEL_OUT4: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
+static CHANNEL_OUT5: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
+static CHANNEL_OUT6: Channel<CriticalSectionRawMutex, u16, 10> = Channel::new();
 
 enum LedState {
     On,
@@ -130,6 +140,57 @@ fn setup_pio_task_sm0<'d>(
     cfg.shift_in.auto_fill = true;
     cfg.shift_in.direction = ShiftDirection::Right;
     sm.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
+    sm.set_config(&cfg);
+}
+
+fn setup_pio_task_sm1<'d>(
+    pio: &mut Common<'d, PIO1>,
+    sm: &mut StateMachine<'d, PIO1, 1>,
+    pin_out1: Peri<'d, impl PioPin>,
+    pin_out2: Peri<'d, impl PioPin>,
+    pin_out3: Peri<'d, impl PioPin>,
+    pin_out4: Peri<'d, impl PioPin>,
+    pin_out5: Peri<'d, impl PioPin>,
+    pin_out6: Peri<'d, impl PioPin>,
+) {
+    // -- read digital input triggers
+    let prg = pio_asm!(
+        "set pindirs, 1",
+        "set pins, 0; Drive pins low",
+        ".wrap_target",
+        "out pins, 6",
+        "nop"
+        "out pins, 6",
+        "nop"
+        "out pins, 6",
+        "nop"
+        "out pins, 6",
+        "nop"
+        "out pins, 6",
+        "out null, 2"
+        ".wrap",
+    );
+    // -- setup sm1
+    let mut cfg = PioConfig::default();
+    cfg.use_program(&pio.load_program(&prg.program), &[]);
+    let pio_out1 = pio.make_pio_pin(pin_out1);
+    let pio_out2 = pio.make_pio_pin(pin_out2);
+    let pio_out3 = pio.make_pio_pin(pin_out3);
+    let pio_out4 = pio.make_pio_pin(pin_out4);
+    let pio_out5 = pio.make_pio_pin(pin_out5);
+    let pio_out6 = pio.make_pio_pin(pin_out6);
+    // -- the sequence 3-4-5-6-1-2 is deliberate,
+    // -- assuming GP16 = out3, GP17 = out4, GP18 = out5, GP19 = out6, GP20 = out1, GP21 = out2
+    // -- and that the range of pins has to be contiguous (not sure if that is really necessary)
+    cfg.set_out_pins(&[
+        &pio_out3, &pio_out4, &pio_out5, &pio_out6, &pio_out1, &pio_out2,
+    ]);
+    cfg.set_set_pins(&[
+        &pio_out3, &pio_out4, &pio_out5, &pio_out6, &pio_out1, &pio_out2,
+    ]);
+    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_2_KHZ);
+    cfg.shift_out.auto_fill = true;
+    cfg.shift_out.threshold = 30;
     sm.set_config(&cfg);
 }
 
@@ -181,8 +242,8 @@ fn main() -> ! {
     // display.flush().unwrap();
 
     // -- user keys
-    let key1 = Input::new(p.PIN_15, Pull::None);
-    let key2 = Input::new(p.PIN_17, Pull::None);
+    // let key1 = Input::new(p.PIN_15, Pull::None);
+    // let key2 = Input::new(p.PIN_17, Pull::None);
 
     // -- i2c bus 1 is used for I2C peripherals
     let sda_1 = p.PIN_2;
@@ -248,33 +309,21 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
     // -- PIO task(s) for digital output
     // -- ---------------------------------------------------------------------
-
     let Pio {
         mut common,
-        sm1,
-        sm2,
-        sm3,
+        mut sm1,
         ..
     } = Pio::new(p.PIO1, IrqsPio1);
-
-    let prg = PioPwmProgram::new(&mut common);
-    let mut pwm_pio_out1 = PioPwm::new(&mut common, sm1, p.PIN_21, &prg);
-    pwm_pio_out1.set_period(core::time::Duration::from_micros(1000));
-    //pwm_pio_out1.set_level(12575);
-    pwm_pio_out1.write(core::time::Duration::from_micros(970));
-    pwm_pio_out1.start();
-
-    let mut pwm_pio_out2 = PioPwm::new(&mut common, sm2, p.PIN_20, &prg);
-    pwm_pio_out2.set_period(core::time::Duration::from_micros(1000));
-    //pwm_pio_out2.set_level(31625);
-    pwm_pio_out2.write(core::time::Duration::from_micros(670));
-    pwm_pio_out2.start();
-
-    let mut pwm_pio_out3 = PioPwm::new(&mut common, sm3, p.PIN_16, &prg);
-    pwm_pio_out3.set_period(core::time::Duration::from_micros(1000));
-    //pwm_pio_out3.set_level(50525);
-    pwm_pio_out3.write(core::time::Duration::from_micros(270));
-    pwm_pio_out3.start();
+    setup_pio_task_sm1(
+        &mut common,
+        &mut sm1,
+        p.PIN_16,
+        p.PIN_17,
+        p.PIN_18,
+        p.PIN_19,
+        p.PIN_20,
+        p.PIN_21,
+    );
 
     // -- ---------------------------------------------------------------------
     // -- Core 1 task
@@ -299,16 +348,197 @@ fn main() -> ! {
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28, btn1, btn2)));
-        spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)))
+        spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
+        spawner.spawn(unwrap!(pio_task_sm1(sm1)));
     });
 }
 
 #[embassy_executor::task]
-async fn pio_task_sm0(mut irq: Irq<'static, PIO0, 3>, mut sm: StateMachine<'static, PIO0, 0>) {
-    sm.set_enable(true);
+async fn pio_task_sm0(mut irq3: Irq<'static, PIO0, 3>, mut sm0: StateMachine<'static, PIO0, 0>) {
+    sm0.set_enable(true);
     loop {
-        irq.wait().await;
+        irq3.wait().await;
         info!("IRQ trigged");
+    }
+}
+
+fn calc_fifo_pwm_out_bit(out1: &mut u16, pwm_out_bits: &mut u32) {
+    let out1_bit = if *out1 > 0 {
+        *out1 -= 1;
+        1
+    } else {
+        0
+    };
+    *pwm_out_bits = (*pwm_out_bits << 1) + out1_bit;
+}
+
+fn calc_fifo_pwm_out_bits(
+    out1: &mut u16,
+    out2: &mut u16,
+    out3: &mut u16,
+    out4: &mut u16,
+    out5: &mut u16,
+    out6: &mut u16,
+) -> u32 {
+    let mut pwm_out_bits: u32 = 0;
+    // -- 5 times 6 bits
+    for _ in 0..5 {
+        // -- the sequence 3-4-5-6-1-2 is deliberate,
+        // -- assuming GP16 = out3, GP17 = out4, GP18 = out5, GP19 = out6, GP20 = out1, GP21 = out2
+        // -- and that the range of pins has to be contiguous (not sure if that is really necessary)
+        calc_fifo_pwm_out_bit(out3, &mut pwm_out_bits);
+        calc_fifo_pwm_out_bit(out4, &mut pwm_out_bits);
+        calc_fifo_pwm_out_bit(out5, &mut pwm_out_bits);
+        calc_fifo_pwm_out_bit(out6, &mut pwm_out_bits);
+        calc_fifo_pwm_out_bit(out1, &mut pwm_out_bits);
+        calc_fifo_pwm_out_bit(out2, &mut pwm_out_bits);
+    }
+    pwm_out_bits
+}
+
+async fn get_out_values() -> (
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+    Option<u16>,
+) {
+    let out1 = if !CHANNEL_OUT1.is_empty() {
+        Some(CHANNEL_OUT1.receive().await)
+    } else {
+        None
+    };
+    let out2 = if !CHANNEL_OUT2.is_empty() {
+        Some(CHANNEL_OUT2.receive().await)
+    } else {
+        None
+    };
+    let out3 = if !CHANNEL_OUT3.is_empty() {
+        Some(CHANNEL_OUT3.receive().await)
+    } else {
+        None
+    };
+    let out4 = if !CHANNEL_OUT4.is_empty() {
+        Some(CHANNEL_OUT4.receive().await)
+    } else {
+        None
+    };
+    let out5 = if !CHANNEL_OUT5.is_empty() {
+        Some(CHANNEL_OUT5.receive().await)
+    } else {
+        None
+    };
+    let out6 = if !CHANNEL_OUT6.is_empty() {
+        Some(CHANNEL_OUT6.receive().await)
+    } else {
+        None
+    };
+    (out1, out2, out3, out4, out5, out6)
+}
+
+fn update_out_value(
+    processed: u16,
+    out_pwm_new: Option<u16>,
+    out_pwm_duty_cycle: &mut u16,
+    out_pwm_count_down: &mut u16,
+) {
+    if let Some(out_pwm_new) = out_pwm_new {
+        // -- set duty cycle value for next cycle
+        *out_pwm_duty_cycle = out_pwm_new;
+        // -- only set *out_pwm_count_down if the duty cycle count down is not already zero
+        if *out_pwm_count_down > 0 && out_pwm_new > processed {
+            *out_pwm_count_down = out_pwm_new - processed;
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
+    // -- PWM duty cycle start values
+    let mut out1_pwm_duty_cycle: u16 = 0;
+    let mut out2_pwm_duty_cycle: u16 = 0;
+    let mut out3_pwm_duty_cycle: u16 = 0;
+    let mut out4_pwm_duty_cycle: u16 = 0;
+    let mut out5_pwm_duty_cycle: u16 = 0;
+    let mut out6_pwm_duty_cycle: u16 = 0;
+    // -- PWM duty cycle count down values
+    let mut out1_pwm_count_down = out1_pwm_duty_cycle;
+    let mut out2_pwm_count_down = out2_pwm_duty_cycle;
+    let mut out3_pwm_count_down = out3_pwm_duty_cycle;
+    let mut out4_pwm_count_down = out4_pwm_duty_cycle;
+    let mut out5_pwm_count_down = out5_pwm_duty_cycle;
+    let mut out6_pwm_count_down = out6_pwm_duty_cycle;
+    // -- 400 Hz => tick every 2500 microseconds
+    let mut cycle_count = CYCLE_400_HZ;
+    let mut ticker_400_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_2500_MICROS));
+    // -- enable state machine and start cycle loop (one cycle = 1 second)
+    sm1.set_enable(true);
+    loop {
+        // -- calculate PWM bits and put them into the TX FIFO
+        let pwm_out_bits = calc_fifo_pwm_out_bits(
+            &mut out1_pwm_count_down,
+            &mut out2_pwm_count_down,
+            &mut out3_pwm_count_down,
+            &mut out4_pwm_count_down,
+            &mut out5_pwm_count_down,
+            &mut out6_pwm_count_down,
+        );
+        sm1.tx().push(pwm_out_bits);
+        // -- check for new PWM values
+        let (out1_pwm_new, out2_pwm_new, out3_pwm_new, out4_pwm_new, out5_pwm_new, out6_pwm_new) =
+            get_out_values().await;
+        let processed = CYCLE_400_HZ - cycle_count;
+        // -- update current PWM values
+        update_out_value(
+            processed,
+            out1_pwm_new,
+            &mut out1_pwm_duty_cycle,
+            &mut out1_pwm_count_down,
+        );
+        update_out_value(
+            processed,
+            out2_pwm_new,
+            &mut out2_pwm_duty_cycle,
+            &mut out2_pwm_count_down,
+        );
+        update_out_value(
+            processed,
+            out3_pwm_new,
+            &mut out3_pwm_duty_cycle,
+            &mut out3_pwm_count_down,
+        );
+        update_out_value(
+            processed,
+            out4_pwm_new,
+            &mut out4_pwm_duty_cycle,
+            &mut out4_pwm_count_down,
+        );
+        update_out_value(
+            processed,
+            out5_pwm_new,
+            &mut out5_pwm_duty_cycle,
+            &mut out5_pwm_count_down,
+        );
+        update_out_value(
+            processed,
+            out6_pwm_new,
+            &mut out6_pwm_duty_cycle,
+            &mut out6_pwm_count_down,
+        );
+        // -- check if cycle is finished, restart with new values if so
+        cycle_count = cycle_count - 1;
+        if cycle_count == 0 {
+            cycle_count = CYCLE_400_HZ;
+            out1_pwm_count_down = out1_pwm_duty_cycle;
+            out2_pwm_count_down = out2_pwm_duty_cycle;
+            out3_pwm_count_down = out3_pwm_duty_cycle;
+            out4_pwm_count_down = out4_pwm_duty_cycle;
+            out5_pwm_count_down = out5_pwm_duty_cycle;
+            out6_pwm_count_down = out6_pwm_duty_cycle;
+        }
+        // -- wait for the next tick
+        ticker_400_hz.next().await;
     }
 }
 
@@ -328,7 +558,9 @@ async fn core0_task(
         let kn2 = adc.read(&mut p28).await.unwrap();
         let btn1_lvl = btn1.level().await;
         let btn2_lvl = btn2.level().await;
-        CHANNEL.send((ain, kn1, kn2, btn1_lvl, btn2_lvl)).await;
+        CHANNEL_CORES
+            .send((ain, kn1, kn2, btn1_lvl, btn2_lvl))
+            .await;
         Timer::after_millis(100).await;
     }
 }
@@ -349,7 +581,7 @@ async fn core1_task(
         .fill_color(BinaryColor::Off)
         .build();
     loop {
-        match CHANNEL.receive().await {
+        match CHANNEL_CORES.receive().await {
             (ain, kn1, kn2, btn1_lvl, btn2_lvl) => {
                 let btn1_lvl = match btn1_lvl {
                     Level::High => "+",
