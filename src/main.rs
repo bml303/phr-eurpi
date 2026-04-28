@@ -62,10 +62,10 @@ use utils::Debouncer;
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
-const CLOCK_DIVIDER_2_KHZ: u32 = 2_000;
-const CYCLE_400_HZ: u16 = 400;
+const CLOCK_DIVIDER_20_KHZ: u32 = 20_000;
+const PWM_DUTY_CYCLE_MAX: u16 = 100;
 const PWM_REFRESH_INTERVAL: u64 = 100_000;
-const TICKER_EVERY_2500_MICROS: u64 = 2500;
+const TICKER_EVERY_50_MICROS: u64 = 50;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -188,7 +188,7 @@ fn setup_pio_task_sm1<'d>(
     cfg.set_set_pins(&[
         &pio_out3, &pio_out4, &pio_out5, &pio_out6, &pio_out1, &pio_out2,
     ]);
-    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_2_KHZ);
+    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_20_KHZ);
     cfg.shift_out.auto_fill = true;
     cfg.shift_out.threshold = 30;
     sm.set_config(&cfg);
@@ -396,60 +396,31 @@ fn calc_fifo_pwm_out_bits(
     pwm_out_bits
 }
 
-async fn get_out_values() -> (
-    Option<u16>,
-    Option<u16>,
-    Option<u16>,
-    Option<u16>,
-    Option<u16>,
-    Option<u16>,
+async fn update_pwm_out_values(
+    out1_pwm_duty_cycle: &mut u16,
+    out2_pwm_duty_cycle: &mut u16,
+    out3_pwm_duty_cycle: &mut u16,
+    out4_pwm_duty_cycle: &mut u16,
+    out5_pwm_duty_cycle: &mut u16,
+    out6_pwm_duty_cycle: &mut u16,
 ) {
-    let out1 = if !CHANNEL_OUT1.is_empty() {
-        Some(CHANNEL_OUT1.receive().await)
-    } else {
-        None
+    if !CHANNEL_OUT1.is_empty() {
+        *out1_pwm_duty_cycle = CHANNEL_OUT1.receive().await;
     };
-    let out2 = if !CHANNEL_OUT2.is_empty() {
-        Some(CHANNEL_OUT2.receive().await)
-    } else {
-        None
-    };
-    let out3 = if !CHANNEL_OUT3.is_empty() {
-        Some(CHANNEL_OUT3.receive().await)
-    } else {
-        None
-    };
-    let out4 = if !CHANNEL_OUT4.is_empty() {
-        Some(CHANNEL_OUT4.receive().await)
-    } else {
-        None
-    };
-    let out5 = if !CHANNEL_OUT5.is_empty() {
-        Some(CHANNEL_OUT5.receive().await)
-    } else {
-        None
-    };
-    let out6 = if !CHANNEL_OUT6.is_empty() {
-        Some(CHANNEL_OUT6.receive().await)
-    } else {
-        None
-    };
-    (out1, out2, out3, out4, out5, out6)
-}
-
-fn update_out_value(
-    processed: u16,
-    out_pwm_new: Option<u16>,
-    out_pwm_duty_cycle: &mut u16,
-    out_pwm_count_down: &mut u16,
-) {
-    if let Some(out_pwm_new) = out_pwm_new {
-        // -- set duty cycle value for next cycle
-        *out_pwm_duty_cycle = out_pwm_new;
-        // -- only set *out_pwm_count_down if the duty cycle count down is not already zero
-        if *out_pwm_count_down > 0 && out_pwm_new > processed {
-            *out_pwm_count_down = out_pwm_new - processed;
-        }
+    if !CHANNEL_OUT2.is_empty() {
+        *out2_pwm_duty_cycle = CHANNEL_OUT2.receive().await;
+    }
+    if !CHANNEL_OUT3.is_empty() {
+        *out3_pwm_duty_cycle = CHANNEL_OUT3.receive().await;
+    }
+    if !CHANNEL_OUT4.is_empty() {
+        *out4_pwm_duty_cycle = CHANNEL_OUT4.receive().await;
+    }
+    if !CHANNEL_OUT5.is_empty() {
+        *out5_pwm_duty_cycle = CHANNEL_OUT5.receive().await;
+    }
+    if !CHANNEL_OUT6.is_empty() {
+        *out6_pwm_duty_cycle = CHANNEL_OUT6.receive().await;
     }
 }
 
@@ -470,12 +441,12 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
     let mut out5_pwm_count_down = out5_pwm_duty_cycle;
     let mut out6_pwm_count_down = out6_pwm_duty_cycle;
     // -- 400 Hz => tick every 2500 microseconds
-    let mut cycle_count = CYCLE_400_HZ;
-    let mut ticker_400_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_2500_MICROS));
+    let mut pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
+    let mut ticker_20000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_50_MICROS));
     // -- enable state machine and start cycle loop (one cycle = 1 second)
     sm1.set_enable(true);
     loop {
-        // -- calculate PWM bits and put them into the TX FIFO
+        // -- calculate PWM bits and push them into the TX FIFO
         let pwm_out_bits = calc_fifo_pwm_out_bits(
             &mut out1_pwm_count_down,
             &mut out2_pwm_count_down,
@@ -485,51 +456,20 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
             &mut out6_pwm_count_down,
         );
         sm1.tx().push(pwm_out_bits);
-        // -- check for new PWM values
-        let (out1_pwm_new, out2_pwm_new, out3_pwm_new, out4_pwm_new, out5_pwm_new, out6_pwm_new) =
-            get_out_values().await;
-        let processed = CYCLE_400_HZ - cycle_count;
-        // -- update current PWM values
-        update_out_value(
-            processed,
-            out1_pwm_new,
+        // -- update PWM values for next cycle
+        update_pwm_out_values(
             &mut out1_pwm_duty_cycle,
-            &mut out1_pwm_count_down,
-        );
-        update_out_value(
-            processed,
-            out2_pwm_new,
             &mut out2_pwm_duty_cycle,
-            &mut out2_pwm_count_down,
-        );
-        update_out_value(
-            processed,
-            out3_pwm_new,
             &mut out3_pwm_duty_cycle,
-            &mut out3_pwm_count_down,
-        );
-        update_out_value(
-            processed,
-            out4_pwm_new,
             &mut out4_pwm_duty_cycle,
-            &mut out4_pwm_count_down,
-        );
-        update_out_value(
-            processed,
-            out5_pwm_new,
             &mut out5_pwm_duty_cycle,
-            &mut out5_pwm_count_down,
-        );
-        update_out_value(
-            processed,
-            out6_pwm_new,
             &mut out6_pwm_duty_cycle,
-            &mut out6_pwm_count_down,
-        );
+        )
+        .await;
         // -- check if cycle is finished, restart with new values if so
-        cycle_count = cycle_count - 1;
-        if cycle_count == 0 {
-            cycle_count = CYCLE_400_HZ;
+        pwm_duty_cycle_count -= 1;
+        if pwm_duty_cycle_count == 0 {
+            pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
             out1_pwm_count_down = out1_pwm_duty_cycle;
             out2_pwm_count_down = out2_pwm_duty_cycle;
             out3_pwm_count_down = out3_pwm_duty_cycle;
@@ -538,7 +478,7 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
             out6_pwm_count_down = out6_pwm_duty_cycle;
         }
         // -- wait for the next tick
-        ticker_400_hz.next().await;
+        ticker_20000_hz.next().await;
     }
 }
 
