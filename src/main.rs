@@ -390,10 +390,15 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
     let mut ticker_40000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_25_MICROS));
     // -- enable state machine and start cycle loop (one cycle = 1 second)
     sm1.set_enable(true);
+    let mut pwm_out_bits_last = u32::MAX;
     loop {
-        // -- calculate PWM bits and push them into the TX FIFO
+        // -- calculate PWM bits
         let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
-        sm1.tx().push(pwm_out_bits);
+        if pwm_out_bits != pwm_out_bits_last {
+            // -- push PWM bits into the TX FIFO if there is a change
+            pwm_out_bits_last = pwm_out_bits;
+            sm1.tx().push(pwm_out_bits);
+        }
         // -- update PWM values for next cycle
         update_pwm_out_values(&mut out_pwm_duty_cycle).await;
         // -- check if cycle is finished, restart with new values if so
@@ -401,6 +406,7 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
         if pwm_duty_cycle_count == 0 {
             pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
             out_pwm_count_down = out_pwm_duty_cycle;
+            pwm_out_bits_last = u32::MAX;
         }
         // -- wait for the next tick
         ticker_40000_hz.next().await;
