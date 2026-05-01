@@ -38,11 +38,9 @@ use embedded_graphics::{
     mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StyledDrawable},
+    primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
-use fixed_dsp::basic::sin_i16;
-use heapless::String;
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -62,10 +60,17 @@ use utils::Debouncer;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CHANNEL_OUT_1: usize = 5;
+const CHANNEL_OUT_2: usize = 4;
+const CHANNEL_OUT_6: usize = 3;
+const CHANNEL_OUT_5: usize = 2;
+const CHANNEL_OUT_4: usize = 1;
+const CHANNEL_OUT_3: usize = 0;
+const CHANNEL_INDEX_TO_NR: [usize; 6] = [3, 4, 5, 6, 2, 1];
 const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
-const CLOCK_DIVIDER_200_KHZ: u32 = 200_000;
+const CLOCK_DIVIDER_100_KHZ: u32 = 100_000;
 const PWM_DUTY_CYCLE_MAX: u8 = 100;
-const TICKER_EVERY_25_MICROS: u64 = 25;
+const TICKER_EVERY_50_MICROS: u64 = 50;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -145,24 +150,20 @@ fn setup_pio_task_sm1<'d>(
     pin_out5: Peri<'d, impl PioPin>,
     pin_out6: Peri<'d, impl PioPin>,
 ) {
-    // -- This uses 10 steps / ticks to write the PWM values 5 times to the pins.
+    // -- This uses 10 steps / ticks to write the PWM values 5 times to the six pins.
     // -- A full duty cycle writes the values 100 times and do this 1000 times every second.
-    // -- 1000 full cycles of 100 writes means 200'000 ticks since every write needs two ticks.
-    // -- This PIO prog has to run at 200kHz.
+    // -- 1000 full duty cycles of 100 writes in the worst case means 100'000 ticks.
+    // -- This PIO prog has to run at 100kHz.
     let prg = pio_asm!(
-        "set pindirs, 1",
+        //"set pindirs, 1",
         "set pins, 0; Drive pins low",
+        "pull block"
         ".wrap_target",
         "out pins, 6",
-        "nop"
         "out pins, 6",
-        "nop"
         "out pins, 6",
-        "nop"
         "out pins, 6",
-        "nop"
         "out pins, 6",
-        "out null, 2"
         ".wrap",
     );
     // -- setup sm1
@@ -178,13 +179,14 @@ fn setup_pio_task_sm1<'d>(
     // -- assuming GP16 = out3, GP17 = out4, GP18 = out5, GP19 = out6, GP20 = out1, GP21 = out2
     // -- and that the range of pins has to be contiguous (not sure if that is really necessary)
     cfg.set_out_pins(&[
-        &pio_out3, &pio_out4, &pio_out5, &pio_out6, &pio_out1, &pio_out2,
+        &pio_out1, &pio_out2, &pio_out3, &pio_out4, &pio_out5, &pio_out6,
     ]);
-    cfg.set_set_pins(&[
-        &pio_out3, &pio_out4, &pio_out5, &pio_out6, &pio_out1, &pio_out2,
-    ]);
-    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_200_KHZ);
+    // cfg.set_set_pins(&[
+    //     &pio_out1, &pio_out2, &pio_out3, //&pio_out4, &pio_out5, &pio_out6,
+    // ]);
+    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_100_KHZ);
     cfg.shift_out.auto_fill = true;
+    cfg.shift_out.direction = ShiftDirection::Right;
     cfg.shift_out.threshold = 30;
     sm.set_config(&cfg);
 }
@@ -348,19 +350,17 @@ async fn pio_task_sm0(mut irq3: Irq<'static, PIO0, 3>, mut sm0: StateMachine<'st
 
 fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
     let mut pwm_out_bits: u32 = 0;
-    // -- 5 times 6 bits
+    // -- 5 times 6 bits => 30 bit plus two unused ones
     for _ in 0..5 {
-        // -- the sequence 3-4-5-6-1-2 is deliberate,
-        // -- assuming GP16 = out3, GP17 = out4, GP18 = out5, GP19 = out6, GP20 = out1, GP21 = out2
-        // -- and that the range of pins has to be contiguous (not sure if that is really necessary)
-        for i in [3, 4, 5, 6, 1, 2] {
-            let i = i - 1;
+        for i in 0..out.len() {
             let out_bit = if out[i] > 0 {
                 out[i] -= 1;
                 1
             } else {
                 0
             };
+            // -- out direction is shift-left so move the eralier bits
+            // -- to higher positions and add the lower bits at the end
             pwm_out_bits = (pwm_out_bits << 1) + out_bit;
         }
     }
@@ -370,7 +370,12 @@ fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
 async fn update_pwm_out_values(out_pwm_duty_cycle: &mut [u8; 6]) {
     for i in 0..CHANNEL_OUT.len() {
         if !CHANNEL_OUT[i].is_empty() {
-            out_pwm_duty_cycle[i] = min(CHANNEL_OUT[i].receive().await, PWM_DUTY_CYCLE_MAX);
+            let out_value = min(CHANNEL_OUT[i].receive().await, PWM_DUTY_CYCLE_MAX);
+            info!(
+                "Out value for channel {} changed from {} to {}",
+                CHANNEL_INDEX_TO_NR[i], out_pwm_duty_cycle[i], out_value
+            );
+            out_pwm_duty_cycle[i] = out_value;
         };
     }
 }
@@ -384,21 +389,23 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
     // -- the duty cycle has to be in the range of 0 to 100
     let mut pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
     // -- The full duty cycle has to be completed 1000 times per second = 100kHz.
-    // -- The PWM prog uses 2 cycles to write the 6 out bits so it has to run at 200kHz.
+    // -- The PWM prog uses 1 tick to write 6 out bits so it has to run at 100kHz.
     // -- This task pushes 5 * 6 bits + 2 unused ones (32 bit) every cycle.
-    // -- So it has to run at 1/5th of the speed of the PWM prog = 40kHz
-    let mut ticker_40000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_25_MICROS));
+    // -- So it has to run at 1/5th of the speed of the PWM prog = 20kHz => every loop 50 microsecs
+    let mut ticker_20000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_50_MICROS));
     // -- enable state machine and start cycle loop (one cycle = 1 second)
     sm1.set_enable(true);
-    let mut pwm_out_bits_last = u32::MAX;
+    //let mut pwm_out_bits_last = u32::MAX;
     loop {
         // -- calculate PWM bits
-        let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
-        if pwm_out_bits != pwm_out_bits_last {
-            // -- push PWM bits into the TX FIFO if there is a change
-            pwm_out_bits_last = pwm_out_bits;
-            sm1.tx().push(pwm_out_bits);
-        }
+        let _pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
+        //if pwm_out_bits != pwm_out_bits_last {
+        // -- push PWM bits into the TX FIFO if there is a change
+        //pwm_out_bits_last = pwm_out_bits;
+        //sm1.tx().push(pwm_out_bits);
+        let pwm_out_bits = 0xffff;
+        sm1.tx().push(pwm_out_bits);
+        //}
         // -- update PWM values for next cycle
         update_pwm_out_values(&mut out_pwm_duty_cycle).await;
         // -- check if cycle is finished, restart with new values if so
@@ -406,10 +413,10 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
         if pwm_duty_cycle_count == 0 {
             pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
             out_pwm_count_down = out_pwm_duty_cycle;
-            pwm_out_bits_last = u32::MAX;
+            //pwm_out_bits_last = u32::MAX;
         }
         // -- wait for the next tick
-        ticker_40000_hz.next().await;
+        ticker_20000_hz.next().await;
     }
 }
 
@@ -446,6 +453,12 @@ async fn core1_task(
     text_style: MonoTextStyle<'static, BinaryColor>,
 ) {
     info!("Hello from core 1");
+    CHANNEL_OUT[CHANNEL_OUT_1].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_2].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_3].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_4].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_5].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_6].send(100).await;
     let p1 = Point::new(0, 16);
     let p2 = Point::new(128, 32);
     let style = PrimitiveStyleBuilder::new()
@@ -454,12 +467,12 @@ async fn core1_task(
     loop {
         match CHANNEL_CORES.receive().await {
             (ain, kn1, kn2, btn1_lvl, btn2_lvl) => {
-                // -- normalize kn1 and kn2 to percent values 0 - 100
-                let out1_value: u8 = (kn1 * 100 / 4096) as u8;
-                let out2_value: u8 = (kn2 * 100 / 4096) as u8;
-                // -- update out1 and out2
-                CHANNEL_OUT[0].send(out1_value).await;
-                CHANNEL_OUT[1].send(out2_value).await;
+                // // -- normalize kn1 and kn2 to percent values 0 - 100
+                // let out1_value: u8 = (kn1 as u64 * 100 / 4096) as u8;
+                // let out2_value: u8 = (kn2 as u64 * 100 / 4096) as u8;
+                // // -- update out1 and out2
+                // CHANNEL_OUT[0].send(out1_value).await;
+                // CHANNEL_OUT[1].send(out2_value).await;
                 // -- update display
                 let btn1_lvl = match btn1_lvl {
                     Level::High => "+",
