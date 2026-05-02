@@ -25,7 +25,7 @@ use embassy_rp::{
     multicore::{Stack, spawn_core1},
     peripherals::{DMA_CH0, DMA_CH1, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
     pio::{
-        Common, Config as PioConfig, Direction as PioPinDirection, InterruptHandler,
+        Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin, InterruptHandler,
         InterruptHandler as PioInterruptHandler, Irq, Pio, PioPin, ShiftDirection, StateMachine,
         program::pio_asm,
     },
@@ -46,6 +46,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
+use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -65,12 +66,12 @@ use utils::Debouncer;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CHANNEL_OUT_1: usize = 0;
-const CHANNEL_OUT_2: usize = 1;
-const CHANNEL_OUT_3: usize = 5;
-const CHANNEL_OUT_4: usize = 4;
-const CHANNEL_OUT_5: usize = 3;
-const CHANNEL_OUT_6: usize = 2;
+const CHANNEL_OUT_1: u8 = 0;
+const CHANNEL_OUT_2: u8 = 1;
+const CHANNEL_OUT_3: u8 = 5;
+const CHANNEL_OUT_4: u8 = 4;
+const CHANNEL_OUT_5: u8 = 3;
+const CHANNEL_OUT_6: u8 = 2;
 const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
 const SM0_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
 const SM1_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
@@ -115,14 +116,12 @@ static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
 static CHANNEL_CORES: Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10> =
     Channel::new();
 
-static CHANNEL_OUT: [Channel<CriticalSectionRawMutex, u8, 10>; 6] = [
-    Channel::new(),
-    Channel::new(),
-    Channel::new(),
-    Channel::new(),
-    Channel::new(),
-    Channel::new(),
-];
+static ANALOG_OUT_1: AtomicU8 = AtomicU8::new(0);
+static ANALOG_OUT_2: AtomicU8 = AtomicU8::new(0);
+static ANALOG_OUT_3: AtomicU8 = AtomicU8::new(0);
+static ANALOG_OUT_4: AtomicU8 = AtomicU8::new(0);
+static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
+static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
 
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
@@ -329,10 +328,6 @@ fn setup_pio_task_sm1<'d>(
     pin_out5: Peri<'d, impl PioPin>,
     pin_out6: Peri<'d, impl PioPin>,
 ) {
-    // -- This uses 10 steps / ticks to write the PWM values 5 times to the six pins.
-    // -- A full duty cycle writes the values 100 times and do this 1000 times every second.
-    // -- 1000 full duty cycles of 100 writes in the worst case means 100'000 ticks.
-    // -- This PIO prog has to run at 100kHz.
     let prg = pio_asm!(
         "set pins, 0"
         "pull block"
@@ -356,10 +351,8 @@ fn setup_pio_task_sm1<'d>(
     cfg.set_out_pins(&[
         &pio_out1, &pio_out2, &pio_out3, &pio_out4, &pio_out5, &pio_out6,
     ]);
-    // cfg.set_set_pins(&[
-    //     &pio_out1, &pio_out2, &pio_out3, //&pio_out4, &pio_out5, &pio_out6,
-    // ]);
     cfg.clock_divider = calculate_pio_clock_divider(SM1_CLOCK_DIVIDER_1_MHZ);
+    cfg.fifo_join = FifoJoin::TxOnly;
     cfg.out_sticky = false;
     cfg.shift_out.auto_fill = true;
     cfg.shift_out.direction = ShiftDirection::Left;
@@ -373,6 +366,7 @@ fn setup_pio_task_sm1<'d>(
     sm.set_config(&cfg);
 }
 
+#[inline(always)]
 fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
     let mut pwm_out_bits: u32 = 0;
     // -- 5 times 6 bits => 30 bit plus two unused ones
@@ -392,30 +386,23 @@ fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
     pwm_out_bits << 2
 }
 
-async fn update_pwm_out_values(out_pwm_duty_cycle: &mut [u8; 6]) {
-    for i in 0..CHANNEL_OUT.len() {
-        if !CHANNEL_OUT[i].is_empty() {
-            let out_value = min(CHANNEL_OUT[i].receive().await, PWM_VALUE_MAX);
-            if out_value != out_pwm_duty_cycle[i] {
-                info!(
-                    "Out value for channel {} changed from {} to {}",
-                    CHANNEL_INDEX_TO_NR[i], out_pwm_duty_cycle[i], out_value
-                );
-                out_pwm_duty_cycle[i] = out_value;
-            }
-        };
-    }
+#[inline(always)]
+fn update_pwm_out_values(out_pwm_count_down: &mut [u8; 6]) {
+    out_pwm_count_down[0] = min(ANALOG_OUT_1.load(Ordering::Relaxed), PWM_VALUE_MAX);
+    out_pwm_count_down[1] = min(ANALOG_OUT_2.load(Ordering::Relaxed), PWM_VALUE_MAX);
+    out_pwm_count_down[5] = min(ANALOG_OUT_3.load(Ordering::Relaxed), PWM_VALUE_MAX);
+    out_pwm_count_down[4] = min(ANALOG_OUT_4.load(Ordering::Relaxed), PWM_VALUE_MAX);
+    out_pwm_count_down[2] = min(ANALOG_OUT_5.load(Ordering::Relaxed), PWM_VALUE_MAX);
+    out_pwm_count_down[3] = min(ANALOG_OUT_6.load(Ordering::Relaxed), PWM_VALUE_MAX);
 }
 
 #[embassy_executor::task]
 async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
-    // -- PWM duty cycle start values
-    let mut out_pwm_duty_cycle: [u8; 6] = [0; 6];
     // -- PWM duty cycle count down values
     let mut out_pwm_count_down: [u8; 6] = [0; 6];
+    update_pwm_out_values(&mut out_pwm_count_down);
     // -- the duty cycle has to be in the range of 0 to 100
     let mut pwm_duty_cycle_count = 0;
-    let mut ticker_200000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_50_MICROS));
     // -- enable state machine and start loop
     sm1.set_enable(true);
     sm1.tx().push(0);
@@ -440,16 +427,16 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
         // -- push PWM bits into the TX FIFO if there is a change
         if pwm_out_bits != pwm_out_bits_last {
             pwm_out_bits_last = pwm_out_bits;
-            sm1.tx().push(pwm_out_bits);
+            if !sm1.tx().full() {
+                sm1.tx().push(pwm_out_bits);
+            }
         }
-        // -- update PWM values for next cycle
-        update_pwm_out_values(&mut out_pwm_duty_cycle).await;
         // -- check if cycle is finished, restart with new values if so
         pwm_duty_cycle_count += 1;
         if pwm_duty_cycle_count == PWM_VALUE_CYCLE_MAX {
             pwm_duty_cycle_count = 0;
-            out_pwm_count_down = out_pwm_duty_cycle;
-            //pwm_out_bits_last = u32::MAX;
+            // -- update PWM values for next cycle
+            update_pwm_out_values(&mut out_pwm_count_down);
         }
         let elapsed_microsecs = start.elapsed().as_micros();
         if elapsed_microsecs > TICKER_EVERY_50_MICROS {
@@ -457,9 +444,12 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
                 "SM1 loop exceeded cycle time: {} micro seconds",
                 elapsed_microsecs
             )
-        } else {
+        } else if elapsed_microsecs < TICKER_EVERY_50_MICROS {
             // -- wait for the next tick
-            ticker_200000_hz.next().await;
+            Timer::after(Duration::from_micros(
+                TICKER_EVERY_50_MICROS - elapsed_microsecs,
+            ))
+            .await;
         }
     }
 }
@@ -497,12 +487,18 @@ async fn core1_task(
     text_style: MonoTextStyle<'static, BinaryColor>,
 ) {
     info!("Hello from core 1");
-    CHANNEL_OUT[CHANNEL_OUT_1].send(0).await;
-    CHANNEL_OUT[CHANNEL_OUT_2].send(0).await;
-    CHANNEL_OUT[CHANNEL_OUT_3].send(0).await;
-    CHANNEL_OUT[CHANNEL_OUT_4].send(PWM_VALUE_MAX / 2).await;
-    CHANNEL_OUT[CHANNEL_OUT_5].send(PWM_VALUE_MAX).await;
-    CHANNEL_OUT[CHANNEL_OUT_6].send(0).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_1, 0)).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_2, 0)).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_3, PWM_VALUE_MAX)).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_4, PWM_VALUE_MAX / 2)).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_5, PWM_VALUE_MAX)).await;
+    // CHANNEL_OUT.send((CHANNEL_OUT_6, 0)).await;
+    ANALOG_OUT_1.store(0, Ordering::Relaxed);
+    ANALOG_OUT_2.store(0, Ordering::Relaxed);
+    ANALOG_OUT_3.store(PWM_VALUE_MAX, Ordering::Relaxed);
+    ANALOG_OUT_4.store(PWM_VALUE_MAX / 2, Ordering::Relaxed);
+    ANALOG_OUT_5.store(PWM_VALUE_MAX, Ordering::Relaxed);
+    ANALOG_OUT_6.store(0, Ordering::Relaxed);
     let p1 = Point::new(0, 16);
     let p2 = Point::new(128, 32);
     let style = PrimitiveStyleBuilder::new()
@@ -517,8 +513,10 @@ async fn core1_task(
                 let out2_value: u8 =
                     PWM_VALUE_MAX - (kn2 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
                 // -- update out1 and out2
-                CHANNEL_OUT[0].send(out1_value).await;
-                CHANNEL_OUT[1].send(out2_value).await;
+                ANALOG_OUT_1.store(out1_value, Ordering::Relaxed);
+                ANALOG_OUT_2.store(out2_value, Ordering::Relaxed);
+                //CHANNEL_OUT.send((CHANNEL_OUT_1, out1_value)).await;
+                //CHANNEL_OUT.send((CHANNEL_OUT_2, out2_value)).await;
                 // -- update display
                 let btn1_lvl = match btn1_lvl {
                     Level::High => "+",
