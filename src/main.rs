@@ -13,10 +13,13 @@ use embassy_rp::{
         Adc, Async as AdcAsync, Channel as AdcChannel, Config as AdcConfig,
         InterruptHandler as AdcInterruptHandler,
     },
-    bind_interrupts, dma,
+    bind_interrupts,
+    clocks::{ClockConfig, clk_sys_freq, core_voltage},
+    config::Config,
+    dma,
     flash::Flash,
     gpio::{Input, Level, Output, Pull},
-    i2c::{self, Config},
+    i2c::{self, Config as I2cConfig},
     interrupt,
     interrupt::{InterruptExt, Priority},
     multicore::{Stack, spawn_core1},
@@ -72,6 +75,7 @@ const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
 const SM0_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
 const SM1_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
 const TICKER_EVERY_50_MICROS: u64 = 50; // -- 200'000 Hz = 200 kHz
+const TICKER_EVERY_500_MICROS: u64 = 500; // -- 20'000 Hz = 20 kHz
 const PWM_VALUE_MIN: u8 = 0;
 const PWM_VALUE_MAX: u8 = 250;
 const PWM_TX_FIFO_VALUES: u8 = 5;
@@ -124,8 +128,12 @@ static CHANNEL_OUT: [Channel<CriticalSectionRawMutex, u8, 10>; 6] = [
 //async fn main(spawner: Spawner) {
 #[entry]
 fn main() -> ! {
+    // Set up for clock frequency of 200 MHz, setting all necessary defaults.
+    let config = Config::new(ClockConfig::system_freq(200_000_000).unwrap());
+
     // -- init pico and get peripherals
-    let p = embassy_rp::init(Default::default());
+    //let p = embassy_rp::init(Default::default());
+    let p = embassy_rp::init(config);
     info!("Starting up {} {}", CARGO_PKG_NAME, CARGO_PKG_VERSION);
 
     // -- ---------------------------------------------------------------------
@@ -148,7 +156,7 @@ fn main() -> ! {
     let sda_0 = p.PIN_0;
     let scl_0 = p.PIN_1;
     info!("Setting up i2c bus 0");
-    let i2c0 = i2c::I2c::new_async(p.I2C0, scl_0, sda_0, IrqsI2c0, Config::default());
+    let i2c0 = i2c::I2c::new_async(p.I2C0, scl_0, sda_0, IrqsI2c0, I2cConfig::default());
 
     // -- display config
     let interface = I2CDisplayInterface::new(i2c0);
@@ -169,7 +177,7 @@ fn main() -> ! {
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
     info!("Setting up i2c bus 1");
-    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, Config::default());
+    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, I2cConfig::default());
 
     // -- ---------------------------------------------------------------------
     // -- Flash
@@ -247,7 +255,7 @@ fn main() -> ! {
     );
 
     // -- High-priority executor: SWI_IRQ_1, priority level 2
-    interrupt::SWI_IRQ_1.set_priority(Priority::P2);
+    interrupt::SWI_IRQ_1.set_priority(Priority::P1);
     let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
     spawner.spawn(unwrap!(pio_task_sm1(sm1)));
 
@@ -411,14 +419,11 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
     // -- enable state machine and start loop
     sm1.set_enable(true);
     sm1.tx().push(0);
-    //let mut pwm_out_bits_last = u32::MAX;
+    let mut pwm_out_bits_last = u32::MAX;
     loop {
         let start = Instant::now();
         // -- calculate PWM bits
         let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
-        //if pwm_out_bits != pwm_out_bits_last {
-        // -- push PWM bits into the TX FIFO if there is a change
-        //pwm_out_bits_last = pwm_out_bits;
         // -- out 1 to 100%
         //let pwm_out_bits = 0b10000010000010000010000010000000;
         // -- out 2 to 100%
@@ -431,8 +436,12 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
         //let pwm_out_bits = 0b00001000001000001000001000001000;
         // -- out 3 to 100%
         //let pwm_out_bits = 0b00000100000100000100000100000100;
-        sm1.tx().push(pwm_out_bits);
-        //}
+        // sm1.tx().push(pwm_out_bits);
+        // -- push PWM bits into the TX FIFO if there is a change
+        if pwm_out_bits != pwm_out_bits_last {
+            pwm_out_bits_last = pwm_out_bits;
+            sm1.tx().push(pwm_out_bits);
+        }
         // -- update PWM values for next cycle
         update_pwm_out_values(&mut out_pwm_duty_cycle).await;
         // -- check if cycle is finished, restart with new values if so
@@ -442,14 +451,15 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
             out_pwm_count_down = out_pwm_duty_cycle;
             //pwm_out_bits_last = u32::MAX;
         }
-        // -- wait for the next tick
-        ticker_200000_hz.next().await;
         let elapsed_microsecs = start.elapsed().as_micros();
         if elapsed_microsecs > TICKER_EVERY_50_MICROS {
             warn!(
                 "SM1 loop exceeded cycle time: {} micro seconds",
                 elapsed_microsecs
             )
+        } else {
+            // -- wait for the next tick
+            ticker_200000_hz.next().await;
         }
     }
 }
