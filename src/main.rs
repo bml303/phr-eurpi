@@ -512,8 +512,10 @@ async fn core1_task(
         match CHANNEL_CORES.receive().await {
             (ain, kn1, kn2, btn1_lvl, btn2_lvl) => {
                 // -- normalize kn1 and kn2 to percent values 0 - 100
-                let out1_value: u8 = (kn1 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
-                let out2_value: u8 = (kn2 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
+                let out1_value: u8 =
+                    PWM_VALUE_MAX - (kn1 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
+                let out2_value: u8 =
+                    PWM_VALUE_MAX - (kn2 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
                 // -- update out1 and out2
                 CHANNEL_OUT[0].send(out1_value).await;
                 CHANNEL_OUT[1].send(out2_value).await;
