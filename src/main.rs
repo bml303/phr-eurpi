@@ -6,7 +6,7 @@ use core::cmp::min;
 use cortex_m_rt::entry;
 //use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
-use embassy_executor::Executor;
+use embassy_executor::{Executor, InterruptExecutor};
 use embassy_rp::{
     Peri,
     adc::{
@@ -17,6 +17,8 @@ use embassy_rp::{
     flash::Flash,
     gpio::{Input, Level, Output, Pull},
     i2c::{self, Config},
+    interrupt,
+    interrupt::{InterruptExt, Priority},
     multicore::{Stack, spawn_core1},
     peripherals::{DMA_CH0, DMA_CH1, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
     pio::{
@@ -33,7 +35,7 @@ use embassy_rp::{
     watchdog::*,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Delay, Duration, Ticker, Timer};
+use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
@@ -60,17 +62,20 @@ use utils::Debouncer;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CHANNEL_OUT_1: usize = 5;
-const CHANNEL_OUT_2: usize = 4;
-const CHANNEL_OUT_6: usize = 3;
-const CHANNEL_OUT_5: usize = 2;
-const CHANNEL_OUT_4: usize = 1;
-const CHANNEL_OUT_3: usize = 0;
-const CHANNEL_INDEX_TO_NR: [usize; 6] = [3, 4, 5, 6, 2, 1];
-const CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
-const CLOCK_DIVIDER_100_KHZ: u32 = 100_000;
-const PWM_DUTY_CYCLE_MAX: u8 = 100;
-const TICKER_EVERY_50_MICROS: u64 = 50;
+const CHANNEL_OUT_1: usize = 0;
+const CHANNEL_OUT_2: usize = 1;
+const CHANNEL_OUT_3: usize = 5;
+const CHANNEL_OUT_4: usize = 4;
+const CHANNEL_OUT_5: usize = 3;
+const CHANNEL_OUT_6: usize = 2;
+const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
+const SM0_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
+const SM1_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
+const TICKER_EVERY_50_MICROS: u64 = 50; // -- 200'000 Hz = 200 kHz
+const PWM_VALUE_MIN: u8 = 0;
+const PWM_VALUE_MAX: u8 = 250;
+const PWM_TX_FIFO_VALUES: u8 = 5;
+const PWM_VALUE_CYCLE_MAX: u8 = PWM_VALUE_MAX / PWM_TX_FIFO_VALUES;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -101,6 +106,7 @@ bind_interrupts!(struct IrqsAdc {
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
+static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
 
 static CHANNEL_CORES: Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10> =
     Channel::new();
@@ -113,83 +119,6 @@ static CHANNEL_OUT: [Channel<CriticalSectionRawMutex, u8, 10>; 6] = [
     Channel::new(),
     Channel::new(),
 ];
-
-fn setup_pio_task_sm0<'d>(
-    pio: &mut Common<'d, PIO0>,
-    sm: &mut StateMachine<'d, PIO0, 0>,
-    pin: Peri<'d, impl PioPin>,
-) {
-    // -- read digital input triggers
-    let prg = pio_asm!(
-        ".origin 0",
-        ".wrap_target",
-        "wait 0 pin 0",
-        "wait 1 pin 0",
-        "irq 3",
-        ".wrap",
-    );
-    // -- setup sm0
-    let mut cfg = PioConfig::default();
-    cfg.use_program(&pio.load_program(&prg.program), &[]);
-    let in_pin = pio.make_pio_pin(pin);
-    cfg.set_in_pins(&[&in_pin]);
-    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_48_KHZ);
-    cfg.shift_in.auto_fill = true;
-    cfg.shift_in.direction = ShiftDirection::Right;
-    sm.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
-    sm.set_config(&cfg);
-}
-
-fn setup_pio_task_sm1<'d>(
-    pio: &mut Common<'d, PIO1>,
-    sm: &mut StateMachine<'d, PIO1, 1>,
-    pin_out1: Peri<'d, impl PioPin>,
-    pin_out2: Peri<'d, impl PioPin>,
-    pin_out3: Peri<'d, impl PioPin>,
-    pin_out4: Peri<'d, impl PioPin>,
-    pin_out5: Peri<'d, impl PioPin>,
-    pin_out6: Peri<'d, impl PioPin>,
-) {
-    // -- This uses 10 steps / ticks to write the PWM values 5 times to the six pins.
-    // -- A full duty cycle writes the values 100 times and do this 1000 times every second.
-    // -- 1000 full duty cycles of 100 writes in the worst case means 100'000 ticks.
-    // -- This PIO prog has to run at 100kHz.
-    let prg = pio_asm!(
-        //"set pindirs, 1",
-        "set pins, 0; Drive pins low",
-        "pull block"
-        ".wrap_target",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        ".wrap",
-    );
-    // -- setup sm1
-    let mut cfg = PioConfig::default();
-    cfg.use_program(&pio.load_program(&prg.program), &[]);
-    let pio_out1 = pio.make_pio_pin(pin_out1);
-    let pio_out2 = pio.make_pio_pin(pin_out2);
-    let pio_out3 = pio.make_pio_pin(pin_out3);
-    let pio_out4 = pio.make_pio_pin(pin_out4);
-    let pio_out5 = pio.make_pio_pin(pin_out5);
-    let pio_out6 = pio.make_pio_pin(pin_out6);
-    // -- the sequence 3-4-5-6-1-2 is deliberate,
-    // -- assuming GP16 = out3, GP17 = out4, GP18 = out5, GP19 = out6, GP20 = out1, GP21 = out2
-    // -- and that the range of pins has to be contiguous (not sure if that is really necessary)
-    cfg.set_out_pins(&[
-        &pio_out1, &pio_out2, &pio_out3, &pio_out4, &pio_out5, &pio_out6,
-    ]);
-    // cfg.set_set_pins(&[
-    //     &pio_out1, &pio_out2, &pio_out3, //&pio_out4, &pio_out5, &pio_out6,
-    // ]);
-    cfg.clock_divider = calculate_pio_clock_divider(CLOCK_DIVIDER_100_KHZ);
-    cfg.shift_out.auto_fill = true;
-    cfg.shift_out.direction = ShiftDirection::Right;
-    cfg.shift_out.threshold = 30;
-    sm.set_config(&cfg);
-}
 
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
@@ -278,35 +207,26 @@ fn main() -> ! {
     let btn2 = Debouncer::new(Input::new(p.PIN_5, Pull::Up), Duration::from_millis(20));
 
     // -- ---------------------------------------------------------------------
-    // -- PIO task(s) for digital input
+    // -- PIO task(s) for digital input & analog output
     // -- ---------------------------------------------------------------------
 
     let Pio {
         mut common,
         irq3,
         mut sm0,
+        mut sm1,
         ..
     } = Pio::new(p.PIO0, IrqsPioSpiAndFlash);
     setup_pio_task_sm0(&mut common, &mut sm0, p.PIN_22);
-
-    // -- ---------------------------------------------------------------------
-    // -- PIO task(s) for digital output
-    // -- ---------------------------------------------------------------------
-
-    let Pio {
-        mut common,
-        mut sm1,
-        ..
-    } = Pio::new(p.PIO1, IrqsPio1);
     setup_pio_task_sm1(
         &mut common,
         &mut sm1,
-        p.PIN_16,
-        p.PIN_17,
-        p.PIN_18,
-        p.PIN_19,
-        p.PIN_20,
-        p.PIN_21,
+        p.PIN_16, // -- out 3
+        p.PIN_17, // -- out 4
+        p.PIN_18, // -- out 5
+        p.PIN_19, // -- out 6
+        p.PIN_20, // -- out 2
+        p.PIN_21, // -- out 1
     );
 
     // -- ---------------------------------------------------------------------
@@ -314,7 +234,7 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
 
     // -- spawn i2c sensoring task on core 1
-    info!("Spawning Task running on core 0");
+    info!("Spawning Task running on core 1");
     spawn_core1(
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
@@ -322,10 +242,14 @@ fn main() -> ! {
             let executor1 = EXECUTOR1.init(Executor::new());
             executor1.run(|spawner| {
                 spawner.spawn(unwrap!(core1_task(display, text_style)));
-                spawner.spawn(unwrap!(pio_task_sm1(sm1)));
             });
         },
     );
+
+    // -- High-priority executor: SWI_IRQ_1, priority level 2
+    interrupt::SWI_IRQ_1.set_priority(Priority::P2);
+    let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
+    spawner.spawn(unwrap!(pio_task_sm1(sm1)));
 
     // -- ---------------------------------------------------------------------
     // -- Core 0 task
@@ -335,8 +259,43 @@ fn main() -> ! {
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         spawner.spawn(unwrap!(core0_task(adc, p26, p27, p28, btn1, btn2)));
-        spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
+        //spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
     });
+}
+
+#[interrupt]
+unsafe fn SWI_IRQ_1() {
+    unsafe { EXECUTOR_HIGH.on_interrupt() }
+}
+
+// -- ---------------------------------------------------------------------
+// -- SM0 - Digital Input
+// -- ---------------------------------------------------------------------
+
+fn setup_pio_task_sm0<'d>(
+    pio: &mut Common<'d, PIO0>,
+    sm: &mut StateMachine<'d, PIO0, 0>,
+    pin: Peri<'d, impl PioPin>,
+) {
+    // -- read digital input triggers
+    let prg = pio_asm!(
+        ".origin 0",
+        ".wrap_target",
+        "wait 0 pin 0",
+        "wait 1 pin 0",
+        "irq 3",
+        ".wrap",
+    );
+    // -- setup sm0
+    let mut cfg = PioConfig::default();
+    cfg.use_program(&pio.load_program(&prg.program), &[]);
+    let in_pin = pio.make_pio_pin(pin);
+    cfg.set_in_pins(&[&in_pin]);
+    cfg.clock_divider = calculate_pio_clock_divider(SM0_CLOCK_DIVIDER_48_KHZ);
+    cfg.shift_in.auto_fill = true;
+    cfg.shift_in.direction = ShiftDirection::Right;
+    sm.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
+    sm.set_config(&cfg);
 }
 
 #[embassy_executor::task]
@@ -348,10 +307,68 @@ async fn pio_task_sm0(mut irq3: Irq<'static, PIO0, 3>, mut sm0: StateMachine<'st
     }
 }
 
+// -- ---------------------------------------------------------------------
+// -- SM1 - Analog Output
+// -- ---------------------------------------------------------------------
+
+fn setup_pio_task_sm1<'d>(
+    pio: &mut Common<'d, PIO0>,
+    sm: &mut StateMachine<'d, PIO0, 1>,
+    pin_out1: Peri<'d, impl PioPin>,
+    pin_out2: Peri<'d, impl PioPin>,
+    pin_out3: Peri<'d, impl PioPin>,
+    pin_out4: Peri<'d, impl PioPin>,
+    pin_out5: Peri<'d, impl PioPin>,
+    pin_out6: Peri<'d, impl PioPin>,
+) {
+    // -- This uses 10 steps / ticks to write the PWM values 5 times to the six pins.
+    // -- A full duty cycle writes the values 100 times and do this 1000 times every second.
+    // -- 1000 full duty cycles of 100 writes in the worst case means 100'000 ticks.
+    // -- This PIO prog has to run at 100kHz.
+    let prg = pio_asm!(
+        "set pins, 0"
+        "pull block"
+        ".wrap_target",
+        "out pins, 6",
+        "out pins, 6",
+        "out pins, 6",
+        "out pins, 6",
+        "out pins, 6",
+        ".wrap",
+    );
+    // -- setup sm1
+    let mut cfg = PioConfig::default();
+    cfg.use_program(&pio.load_program(&prg.program), &[]);
+    let pio_out1 = pio.make_pio_pin(pin_out1);
+    let pio_out2 = pio.make_pio_pin(pin_out2);
+    let pio_out3 = pio.make_pio_pin(pin_out3);
+    let pio_out4 = pio.make_pio_pin(pin_out4);
+    let pio_out5 = pio.make_pio_pin(pin_out5);
+    let pio_out6 = pio.make_pio_pin(pin_out6);
+    cfg.set_out_pins(&[
+        &pio_out1, &pio_out2, &pio_out3, &pio_out4, &pio_out5, &pio_out6,
+    ]);
+    // cfg.set_set_pins(&[
+    //     &pio_out1, &pio_out2, &pio_out3, //&pio_out4, &pio_out5, &pio_out6,
+    // ]);
+    cfg.clock_divider = calculate_pio_clock_divider(SM1_CLOCK_DIVIDER_1_MHZ);
+    cfg.out_sticky = false;
+    cfg.shift_out.auto_fill = true;
+    cfg.shift_out.direction = ShiftDirection::Left;
+    cfg.shift_out.threshold = 30;
+    sm.set_pin_dirs(
+        PioPinDirection::Out,
+        &[
+            &pio_out1, &pio_out2, &pio_out3, &pio_out4, &pio_out5, &pio_out6,
+        ],
+    );
+    sm.set_config(&cfg);
+}
+
 fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
     let mut pwm_out_bits: u32 = 0;
     // -- 5 times 6 bits => 30 bit plus two unused ones
-    for _ in 0..5 {
+    for _ in 0..PWM_TX_FIFO_VALUES {
         for i in 0..out.len() {
             let out_bit = if out[i] > 0 {
                 out[i] -= 1;
@@ -359,64 +376,81 @@ fn calc_fifo_pwm_out_bits(out: &mut [u8; 6]) -> u32 {
             } else {
                 0
             };
-            // -- out direction is shift-left so move the eralier bits
-            // -- to higher positions and add the lower bits at the end
-            pwm_out_bits = (pwm_out_bits << 1) + out_bit;
+            // -- out direction is shift-left and the order of the
+            // -- six bits is out1-out2-out6-out5-out4-out3
+            pwm_out_bits = (pwm_out_bits << 1) | out_bit;
         }
     }
-    pwm_out_bits
+    pwm_out_bits << 2
 }
 
 async fn update_pwm_out_values(out_pwm_duty_cycle: &mut [u8; 6]) {
     for i in 0..CHANNEL_OUT.len() {
         if !CHANNEL_OUT[i].is_empty() {
-            let out_value = min(CHANNEL_OUT[i].receive().await, PWM_DUTY_CYCLE_MAX);
-            info!(
-                "Out value for channel {} changed from {} to {}",
-                CHANNEL_INDEX_TO_NR[i], out_pwm_duty_cycle[i], out_value
-            );
-            out_pwm_duty_cycle[i] = out_value;
+            let out_value = min(CHANNEL_OUT[i].receive().await, PWM_VALUE_MAX);
+            if out_value != out_pwm_duty_cycle[i] {
+                info!(
+                    "Out value for channel {} changed from {} to {}",
+                    CHANNEL_INDEX_TO_NR[i], out_pwm_duty_cycle[i], out_value
+                );
+                out_pwm_duty_cycle[i] = out_value;
+            }
         };
     }
 }
 
 #[embassy_executor::task]
-async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO1, 1>) {
+async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
     // -- PWM duty cycle start values
     let mut out_pwm_duty_cycle: [u8; 6] = [0; 6];
     // -- PWM duty cycle count down values
     let mut out_pwm_count_down: [u8; 6] = [0; 6];
     // -- the duty cycle has to be in the range of 0 to 100
-    let mut pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
-    // -- The full duty cycle has to be completed 1000 times per second = 100kHz.
-    // -- The PWM prog uses 1 tick to write 6 out bits so it has to run at 100kHz.
-    // -- This task pushes 5 * 6 bits + 2 unused ones (32 bit) every cycle.
-    // -- So it has to run at 1/5th of the speed of the PWM prog = 20kHz => every loop 50 microsecs
-    let mut ticker_20000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_50_MICROS));
-    // -- enable state machine and start cycle loop (one cycle = 1 second)
+    let mut pwm_duty_cycle_count = 0;
+    let mut ticker_200000_hz = Ticker::every(Duration::from_micros(TICKER_EVERY_50_MICROS));
+    // -- enable state machine and start loop
     sm1.set_enable(true);
+    sm1.tx().push(0);
     //let mut pwm_out_bits_last = u32::MAX;
     loop {
+        let start = Instant::now();
         // -- calculate PWM bits
-        let _pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
+        let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
         //if pwm_out_bits != pwm_out_bits_last {
         // -- push PWM bits into the TX FIFO if there is a change
         //pwm_out_bits_last = pwm_out_bits;
-        //sm1.tx().push(pwm_out_bits);
-        let pwm_out_bits = 0xffff;
+        // -- out 1 to 100%
+        //let pwm_out_bits = 0b10000010000010000010000010000000;
+        // -- out 2 to 100%
+        //let pwm_out_bits = 0b01000001000001000001000001000000;
+        // -- out 6 to 100%
+        //let pwm_out_bits = 0b00100000100000100000100000100000;
+        // -- out 5 to 100%
+        //let pwm_out_bits = 0b00010000010000010000010000010000;
+        // -- out 4 to 100%
+        //let pwm_out_bits = 0b00001000001000001000001000001000;
+        // -- out 3 to 100%
+        //let pwm_out_bits = 0b00000100000100000100000100000100;
         sm1.tx().push(pwm_out_bits);
         //}
         // -- update PWM values for next cycle
         update_pwm_out_values(&mut out_pwm_duty_cycle).await;
         // -- check if cycle is finished, restart with new values if so
-        pwm_duty_cycle_count -= 1;
-        if pwm_duty_cycle_count == 0 {
-            pwm_duty_cycle_count = PWM_DUTY_CYCLE_MAX;
+        pwm_duty_cycle_count += 1;
+        if pwm_duty_cycle_count == PWM_VALUE_CYCLE_MAX {
+            pwm_duty_cycle_count = 0;
             out_pwm_count_down = out_pwm_duty_cycle;
             //pwm_out_bits_last = u32::MAX;
         }
         // -- wait for the next tick
-        ticker_20000_hz.next().await;
+        ticker_200000_hz.next().await;
+        let elapsed_microsecs = start.elapsed().as_micros();
+        if elapsed_microsecs > TICKER_EVERY_50_MICROS {
+            warn!(
+                "SM1 loop exceeded cycle time: {} micro seconds",
+                elapsed_microsecs
+            )
+        }
     }
 }
 
@@ -453,12 +487,12 @@ async fn core1_task(
     text_style: MonoTextStyle<'static, BinaryColor>,
 ) {
     info!("Hello from core 1");
-    CHANNEL_OUT[CHANNEL_OUT_1].send(100).await;
-    CHANNEL_OUT[CHANNEL_OUT_2].send(100).await;
-    CHANNEL_OUT[CHANNEL_OUT_3].send(100).await;
-    CHANNEL_OUT[CHANNEL_OUT_4].send(100).await;
-    CHANNEL_OUT[CHANNEL_OUT_5].send(100).await;
-    CHANNEL_OUT[CHANNEL_OUT_6].send(100).await;
+    CHANNEL_OUT[CHANNEL_OUT_1].send(0).await;
+    CHANNEL_OUT[CHANNEL_OUT_2].send(0).await;
+    CHANNEL_OUT[CHANNEL_OUT_3].send(0).await;
+    CHANNEL_OUT[CHANNEL_OUT_4].send(PWM_VALUE_MAX / 2).await;
+    CHANNEL_OUT[CHANNEL_OUT_5].send(PWM_VALUE_MAX).await;
+    CHANNEL_OUT[CHANNEL_OUT_6].send(0).await;
     let p1 = Point::new(0, 16);
     let p2 = Point::new(128, 32);
     let style = PrimitiveStyleBuilder::new()
