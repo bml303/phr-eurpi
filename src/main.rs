@@ -73,6 +73,7 @@ const CHANNEL_OUT_4: u8 = 4;
 const CHANNEL_OUT_5: u8 = 3;
 const CHANNEL_OUT_6: u8 = 2;
 const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
+const I2C1_BUS_FREQUENCY_400_KBIT: u32 = 400_000;
 const SM0_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
 const SM1_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
 const TICKER_EVERY_50_MICROS: u64 = 50; // -- 200'000 Hz = 200 kHz
@@ -168,15 +169,22 @@ fn main() -> ! {
         .text_color(BinaryColor::On)
         .build();
 
-    // -- user keys
-    // let key1 = Input::new(p.PIN_15, Pull::None);
-    // let key2 = Input::new(p.PIN_17, Pull::None);
+    // -- ---------------------------------------------------------------------
+    // -- I2C bus for peripherals
+    // -- ---------------------------------------------------------------------
 
     // -- i2c bus 1 is used for I2C peripherals
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
     info!("Setting up i2c bus 1");
-    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, I2cConfig::default());
+    let i2c_config = {
+        let mut i2c_config = I2cConfig::default();
+        i2c_config.frequency = I2C1_BUS_FREQUENCY_400_KBIT;
+        i2c_config.scl_pullup = true;
+        i2c_config.sda_pullup = true;
+        i2c_config
+    };
+    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, i2c_config);
 
     // -- ---------------------------------------------------------------------
     // -- Flash
