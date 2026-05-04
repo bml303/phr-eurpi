@@ -10,6 +10,10 @@ const MPC4725_GENERAL_COMMAND: u8 = 0x00;
 const MPC4725_GENERAL_COMMAND_RESET: u8 = 0x06;
 const MPC4725_GENERAL_COMMAND_WAKEUP: u8 = 0x09;
 
+const MPC4725_WRITE_COMMAND_FAST: u8 = 0x00;
+const MPC4725_WRITE_COMMAND_REGULAR: u8 = 0x40;
+const MPC4725_WRITE_COMMAND_EEPROM: u8 = 0x50;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mpc4725DeviceAddress {
     Default,
@@ -62,11 +66,11 @@ impl Mpc4725 {
         T: PeripheralType + Instance,
     {
         // -- SHT31 expects most significant byte first
-        let cmd_msb: u8 = MPC4725_GENERAL_COMMAND;
-        let cmd_lsb: u8 = MPC4725_GENERAL_COMMAND_RESET;
+        let cmd: u8 = MPC4725_GENERAL_COMMAND;
+        let data: u8 = MPC4725_GENERAL_COMMAND_RESET;
         // -- send MSB as command and LSB as data
-        debug!("Sending MPC4725 command: {:#04x} {:#04x}", cmd_msb, cmd_lsb);
-        i2cio::write_byte(i2c, self.device_addr.value(), cmd_msb, cmd_lsb).await
+        debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
+        i2cio::write_byte(i2c, self.device_addr.value(), cmd, data).await
     }
 
     pub async fn wakeup<T>(&mut self, i2c: &mut I2c<'static, T, Async>) -> Result<(), Error>
@@ -74,10 +78,26 @@ impl Mpc4725 {
         T: PeripheralType + Instance,
     {
         // -- MPC4725 expects most significant byte first
-        let cmd_msb: u8 = MPC4725_GENERAL_COMMAND;
-        let cmd_lsb: u8 = MPC4725_GENERAL_COMMAND_RESET;
+        let cmd: u8 = MPC4725_GENERAL_COMMAND;
+        let data: u8 = MPC4725_GENERAL_COMMAND_RESET;
         // -- send MSB as command and LSB as data
-        debug!("Sending MPC4725 command: {:#04x} {:#04x}", cmd_msb, cmd_lsb);
-        i2cio::write_byte(i2c, self.device_addr.value(), cmd_msb, cmd_lsb).await
+        debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
+        i2cio::write_byte(i2c, self.device_addr.value(), cmd, data).await
+    }
+
+    pub async fn write_dac_value<T>(
+        &mut self,
+        i2c: &mut I2c<'static, T, Async>,
+        value: u16,
+    ) -> Result<(), Error>
+    where
+        T: PeripheralType + Instance,
+    {
+        // -- MPC4725 expects most significant byte first
+        let cmd: u8 = MPC4725_WRITE_COMMAND_REGULAR;
+        let data: u16 = value << 4;
+        // -- send MSB as command and LSB as data
+        debug!("Sending MPC4725 command: {:#08b} {:#016b}", cmd, data);
+        i2cio::write_word(i2c, self.device_addr.value(), cmd, data).await
     }
 }
