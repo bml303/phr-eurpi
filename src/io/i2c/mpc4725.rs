@@ -55,9 +55,9 @@ impl Mpc4725 {
         let mut mpc4725 = Mpc4725 { device_addr };
         // -- wakeup & reset
         debug!("Waking up Mpc4725");
-        let status_reg_val = mpc4725.wakeup(i2c).await?;
+        mpc4725.wakeup(i2c).await?;
         debug!("Resetting Mpc4725");
-        let status_reg_val = mpc4725.reset(i2c).await?;
+        mpc4725.reset(i2c).await?;
         Ok(mpc4725)
     }
 

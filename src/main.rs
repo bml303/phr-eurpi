@@ -19,7 +19,7 @@ use embassy_rp::{
     dma,
     flash::Flash,
     gpio::{Input, Level, Output, Pull},
-    i2c::{self, Config as I2cConfig},
+    i2c::{self, Async as I2cAsync, Config as I2cConfig, I2c},
     interrupt,
     interrupt::{InterruptExt, Priority},
     multicore::{Stack, spawn_core1},
@@ -46,6 +46,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
+use mi_plaits_dsp::oscillator::*;
 use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
@@ -57,6 +58,7 @@ mod io;
 mod utils;
 
 use io::flash::FLASH_SIZE;
+use io::i2c::mpc4725::{Mpc4725, Mpc4725DeviceAddress};
 use utils::Debouncer;
 
 // use task::{
@@ -82,6 +84,9 @@ const PWM_VALUE_MIN: u8 = 0;
 const PWM_VALUE_MAX: u8 = 250;
 const PWM_TX_FIFO_VALUES: u8 = 5;
 const PWM_VALUE_CYCLE_MAX: u8 = PWM_VALUE_MAX / PWM_TX_FIFO_VALUES;
+
+const SAMPLE_RATE_25KHZ: f32 = 25000.0;
+const SAMPLE_BLOCK_SIZE: usize = 24;
 
 // Bind the RTC interrupt to the handler
 bind_interrupts!(struct IrqsRtc {
@@ -123,6 +128,8 @@ static ANALOG_OUT_3: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_4: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
+
+static CHANNEL_OSCILLATOR: Channel<CriticalSectionRawMutex, f32, 10> = Channel::new();
 
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
@@ -184,7 +191,7 @@ fn main() -> ! {
         i2c_config.sda_pullup = true;
         i2c_config
     };
-    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, i2c_config);
+    let mut i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, i2c_config);
 
     // -- ---------------------------------------------------------------------
     // -- Flash
@@ -256,7 +263,7 @@ fn main() -> ! {
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
             executor1.run(|spawner| {
-                spawner.spawn(unwrap!(core1_task(display, text_style)));
+                spawner.spawn(unwrap!(core1_task(display, text_style, i2c1)));
             });
         },
     );
@@ -417,8 +424,6 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
     let mut pwm_out_bits_last = u32::MAX;
     loop {
         let start = Instant::now();
-        // -- calculate PWM bits
-        let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
         // -- out 1 to 100%
         //let pwm_out_bits = 0b10000010000010000010000010000000;
         // -- out 2 to 100%
@@ -432,6 +437,8 @@ async fn pio_task_sm1(mut sm1: StateMachine<'static, PIO0, 1>) {
         // -- out 3 to 100%
         //let pwm_out_bits = 0b00000100000100000100000100000100;
         // sm1.tx().push(pwm_out_bits);
+        // -- calculate PWM bits
+        let pwm_out_bits = calc_fifo_pwm_out_bits(&mut out_pwm_count_down);
         // -- push PWM bits into the TX FIFO if there is a change
         if pwm_out_bits != pwm_out_bits_last {
             pwm_out_bits_last = pwm_out_bits;
@@ -472,16 +479,30 @@ async fn core0_task(
     mut btn2: Debouncer<'static>,
 ) {
     info!("Hello from core 0");
+    // -- setup oscillator
+    let frequency = 110.0;
+    let f = frequency / SAMPLE_RATE_25KHZ;
+    let mut out = [0.0; 1];
+    let mut osc = sine_oscillator::FastSineOscillator::new();
+    let mut start = Instant::now();
     loop {
-        let ain = adc.read(&mut p26).await.unwrap();
-        let kn1 = adc.read(&mut p27).await.unwrap();
-        let kn2 = adc.read(&mut p28).await.unwrap();
-        let btn1_lvl = btn1.level().await;
-        let btn2_lvl = btn2.level().await;
-        CHANNEL_CORES
-            .send((ain, kn1, kn2, btn1_lvl, btn2_lvl))
-            .await;
-        Timer::after_millis(100).await;
+        // -- do this every 40 microseconds
+        osc.render(f, &mut out);
+        CHANNEL_OSCILLATOR.send(out[0]).await;
+        // -- do this every 100 milliseconds
+        if start.elapsed().as_millis() >= 100 {
+            let ain = adc.read(&mut p26).await.unwrap();
+            let kn1 = adc.read(&mut p27).await.unwrap();
+            let kn2 = adc.read(&mut p28).await.unwrap();
+            let btn1_lvl = btn1.level().await;
+            let btn2_lvl = btn2.level().await;
+            CHANNEL_CORES
+                .send((ain, kn1, kn2, btn1_lvl, btn2_lvl))
+                .await;
+            start = Instant::now();
+        }
+        //Timer::after_millis(100).await;
+        Timer::after_micros(40);
     }
 }
 
@@ -493,8 +514,12 @@ async fn core1_task(
         BufferedGraphicsMode<DisplaySize128x32>,
     >,
     text_style: MonoTextStyle<'static, BinaryColor>,
+    mut i2c1: I2c<'static, I2C1, I2cAsync>,
 ) {
     info!("Hello from core 1");
+    let mut mpc4725 = Mpc4725::new(&mut i2c1, Mpc4725DeviceAddress::Default)
+        .await
+        .unwrap();
     // CHANNEL_OUT.send((CHANNEL_OUT_1, 0)).await;
     // CHANNEL_OUT.send((CHANNEL_OUT_2, 0)).await;
     // CHANNEL_OUT.send((CHANNEL_OUT_3, PWM_VALUE_MAX)).await;
@@ -513,43 +538,43 @@ async fn core1_task(
         .fill_color(BinaryColor::Off)
         .build();
     loop {
-        match CHANNEL_CORES.receive().await {
-            (ain, kn1, kn2, btn1_lvl, btn2_lvl) => {
-                // -- normalize kn1 and kn2 to percent values 0 - 100
-                let out1_value: u8 =
-                    PWM_VALUE_MAX - (kn1 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
-                let out2_value: u8 =
-                    PWM_VALUE_MAX - (kn2 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
-                // -- update out1 and out2
-                ANALOG_OUT_1.store(out1_value, Ordering::Relaxed);
-                ANALOG_OUT_2.store(out2_value, Ordering::Relaxed);
-                //CHANNEL_OUT.send((CHANNEL_OUT_1, out1_value)).await;
-                //CHANNEL_OUT.send((CHANNEL_OUT_2, out2_value)).await;
-                // -- update display
-                let btn1_lvl = match btn1_lvl {
-                    Level::High => "+",
-                    Level::Low => "-",
-                };
-                let btn2_lvl = match btn2_lvl {
-                    Level::High => "+",
-                    Level::Low => "-",
-                };
-                let mut format_buf = [0u8; 64];
-                let level_text = format_no_std::show(
-                    &mut format_buf,
-                    format_args!("{} {} {} {} {}", ain, btn1_lvl, kn1, btn2_lvl, kn2),
-                )
+        if let Ok(sample) = CHANNEL_OSCILLATOR.try_receive() {
+            // -- normalize the sample and send it to the DAC
+            let value = ((sample + 1f32) * 4096f32 / 2f32) as u16;
+            mpc4725.write_dac_value(&mut i2c1, value).await.unwrap();
+        } else if let Ok((ain, kn1, kn2, btn1_lvl, btn2_lvl)) = CHANNEL_CORES.try_receive() {
+            // -- normalize kn1 and kn2 to percent values 0 - 100
+            let out1_value: u8 = PWM_VALUE_MAX - (kn1 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
+            let out2_value: u8 = PWM_VALUE_MAX - (kn2 as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
+            // -- update out1 and out2
+            ANALOG_OUT_1.store(out1_value, Ordering::Relaxed);
+            ANALOG_OUT_2.store(out2_value, Ordering::Relaxed);
+            //CHANNEL_OUT.send((CHANNEL_OUT_1, out1_value)).await;
+            //CHANNEL_OUT.send((CHANNEL_OUT_2, out2_value)).await;
+            // -- update display
+            let btn1_lvl = match btn1_lvl {
+                Level::High => "+",
+                Level::Low => "-",
+            };
+            let btn2_lvl = match btn2_lvl {
+                Level::High => "+",
+                Level::Low => "-",
+            };
+            let mut format_buf = [0u8; 64];
+            let level_text = format_no_std::show(
+                &mut format_buf,
+                format_args!("{} {} {} {} {}", ain, btn1_lvl, kn1, btn2_lvl, kn2),
+            )
+            .unwrap();
+            Rectangle::with_corners(p1, p2)
+                .draw_styled(&style, &mut display)
+                //.into_styled(text_style)
+                //.draw(&mut display)
                 .unwrap();
-                Rectangle::with_corners(p1, p2)
-                    .draw_styled(&style, &mut display)
-                    //.into_styled(text_style)
-                    //.draw(&mut display)
-                    .unwrap();
-                Text::with_baseline(level_text, Point::new(0, 16), text_style, Baseline::Top)
-                    .draw(&mut display)
-                    .unwrap();
-                display.flush().unwrap();
-            }
+            Text::with_baseline(level_text, Point::new(0, 16), text_style, Baseline::Top)
+                .draw(&mut display)
+                .unwrap();
+            display.flush().unwrap();
         }
     }
 }
