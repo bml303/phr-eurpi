@@ -46,17 +46,17 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
-use mi_plaits_dsp::oscillator::*;
 use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 // #[allow(dead_code)]
+mod audio;
 mod io;
-// mod task;
 mod utils;
 
+use audio::oscillator::sine_oscillator::FastSineOscillator;
 use io::flash::FLASH_SIZE;
 use io::i2c::mpc4725::{Mpc4725, Mpc4725DeviceAddress};
 use utils::Debouncer;
@@ -483,7 +483,7 @@ async fn core0_task(
     let frequency = 110.0;
     let f = frequency / SAMPLE_RATE_25KHZ;
     let mut out = [0.0; 1];
-    let mut osc = sine_oscillator::FastSineOscillator::new();
+    let mut osc = FastSineOscillator::new();
     let mut start = Instant::now();
     loop {
         // -- do this every 40 microseconds

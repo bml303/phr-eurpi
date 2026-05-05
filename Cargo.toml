@@ -33,12 +33,9 @@ embedded-sdmmc = "0.9"
 embedded-storage = { version = "0.3" }
 #embedded-tls = { version = "0.18.0", features = ["defmt", "log"], default-features = false }
 format_no_std = "1.2"
-#fundsp = { version = "0.23.0", default-features = false }
-#cute-dsp = { version = "0.0.40", default-features = false, features = ["alloc"] }
-#little_weirdo = "0.1.1"
-fixed-dsp = "0.2.1"
-mi-plaits-dsp = { git = "https://github.com/bml303/mi-plaits-dsp-rs.git", branch = "master" }
+#mi-plaits-dsp = { git = "https://github.com/bml303/mi-plaits-dsp-rs.git", branch = "master" }
 #mi-plaits-dsp = { path="../../modular/mi-plaits-dsp-rs" }
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }
 heapless = "0.9"
 log = "0.4"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
