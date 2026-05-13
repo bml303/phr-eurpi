@@ -3,6 +3,7 @@ use embassy_rp::{
     PeripheralType,
     i2c::{Async, Error, I2c, Instance},
 };
+use embedded_hal_1::i2c::{I2c as I2cHal, Operation};
 
 use crate::io::i2c::i2cio;
 
@@ -65,10 +66,8 @@ impl Mpc4725 {
     where
         T: PeripheralType + Instance,
     {
-        // -- SHT31 expects most significant byte first
         let cmd: u8 = MPC4725_GENERAL_COMMAND;
         let data: u8 = MPC4725_GENERAL_COMMAND_RESET;
-        // -- send MSB as command and LSB as data
         debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
         i2cio::write_byte(i2c, self.device_addr.value(), cmd, data).await
     }
@@ -77,10 +76,8 @@ impl Mpc4725 {
     where
         T: PeripheralType + Instance,
     {
-        // -- MPC4725 expects most significant byte first
         let cmd: u8 = MPC4725_GENERAL_COMMAND;
-        let data: u8 = MPC4725_GENERAL_COMMAND_RESET;
-        // -- send MSB as command and LSB as data
+        let data: u8 = MPC4725_GENERAL_COMMAND_WAKEUP;
         debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
         i2cio::write_byte(i2c, self.device_addr.value(), cmd, data).await
     }
@@ -93,11 +90,15 @@ impl Mpc4725 {
     where
         T: PeripheralType + Instance,
     {
-        // -- MPC4725 expects most significant byte first
-        let cmd: u8 = MPC4725_WRITE_COMMAND_REGULAR;
-        let data: u16 = value << 4;
-        // -- send MSB as command and LSB as data
-        debug!("Sending MPC4725 command: {:#08b} {:#016b}", cmd, data);
-        i2cio::write_word(i2c, self.device_addr.value(), cmd, data).await
+        let cmd: u8 = MPC4725_WRITE_COMMAND_REGULAR | (((value >> 8) as u8) & 0xf);
+        let data: u8 = value as u8;
+        //debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
+        let cmd_data = [cmd, data];
+        let mut ops = [Operation::Write(&cmd_data), Operation::Write(&cmd_data)];
+        i2c.transaction(self.device_addr.value() as u8, &mut ops)
+
+        // let data_bytes = [cmd, data, cmd, data];
+        // i2c.write(self.device_addr.value(), )
+        // i2cio::write_bytes(i2c, self.device_addr.value(), data_bytes).await
     }
 }
