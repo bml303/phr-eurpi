@@ -61,32 +61,14 @@ use audio::oscillator::sine_oscillator::SineOscillator;
 use io::flash::FLASH_SIZE;
 use io::i2c::mpc4725::{Mpc4725, Mpc4725DeviceAddress};
 use tasks::{
-    ChannelInputsType, ChannelOscillatorType, core0_task, core1_task, osc_task, pio_task_sm0,
-    pio_task_sm1, setup_pio_task_sm0, setup_pio_task_sm1, setup_pio_task_sm2,
+    ChannelInputsType, ChannelOscillatorType, I2C1_BUS_FREQUENCY_1_MBIT, core0_task, core1_task,
+    osc_task, pio_task_sm0, pio_task_sm1, setup_pio_task_sm0, setup_pio_task_sm1,
+    setup_pio_task_sm2,
 };
 use utils::Debouncer;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CHANNEL_OUT_1: u8 = 0;
-const CHANNEL_OUT_2: u8 = 1;
-const CHANNEL_OUT_3: u8 = 5;
-const CHANNEL_OUT_4: u8 = 4;
-const CHANNEL_OUT_5: u8 = 3;
-const CHANNEL_OUT_6: u8 = 2;
-const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
-const I2C1_BUS_FREQUENCY_100_KBIT: u32 = 100_000;
-const I2C1_BUS_FREQUENCY_400_KBIT: u32 = 400_000;
-const I2C1_BUS_FREQUENCY_1_MBIT: u32 = 1_000_000;
-
-const TICKER_EVERY_500_MICROS: u64 = 500; // -- 20'000 Hz = 20 kHz
-const PWM_VALUE_MIN: u8 = 0;
-
-const SAMPLE_RATE_44KHZ: f32 = 44000.0;
-const SAMPLE_RATE_25KHZ: f32 = 25000.0;
-const SAMPLE_RATE_10KHZ: f32 = 10000.0;
-const SAMPLE_RATE_5KHZ: f32 = 5000.0;
-//const SAMPLE_BLOCK_SIZE: usize = 24;
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
@@ -188,20 +170,20 @@ fn main() -> ! {
     // -- I2C bus for peripherals
     // -- ---------------------------------------------------------------------
 
-    // // -- i2c bus 1 is used for I2C peripherals
-    // let sda_1 = p.PIN_2;
-    // let scl_1 = p.PIN_3;
-    // info!("Setting up i2c bus 1");
-    // let i2c1_config = {
-    //     let mut i2c_config = I2cConfig::default();
-    //     //i2c_config.frequency = I2C1_BUS_FREQUENCY_400_KBIT;
-    //     i2c_config.frequency = I2C1_BUS_FREQUENCY_1_MBIT;
-    //     i2c_config.scl_pullup = true;
-    //     i2c_config.sda_pullup = true;
-    //     i2c_config
-    // };
-    // //let i2c1_config = I2cConfig::default();
-    // let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, i2c1_config);
+    // -- i2c bus 1 is used for I2C peripherals
+    let sda_1 = p.PIN_2;
+    let scl_1 = p.PIN_3;
+    info!("Setting up i2c bus 1");
+    let i2c1_config = {
+        let mut i2c_config = I2cConfig::default();
+        //i2c_config.frequency = I2C1_BUS_FREQUENCY_400_KBIT;
+        i2c_config.frequency = I2C1_BUS_FREQUENCY_1_MBIT;
+        i2c_config.scl_pullup = true;
+        i2c_config.sda_pullup = true;
+        i2c_config
+    };
+    //let i2c1_config = I2cConfig::default();
+    let i2c1 = i2c::I2c::new_async(p.I2C1, scl_1, sda_1, IrqsI2c1, i2c1_config);
 
     // -- ---------------------------------------------------------------------
     // -- Flash
@@ -247,7 +229,7 @@ fn main() -> ! {
         irq3,
         mut sm0,
         mut sm1,
-        mut sm2,
+        //mut sm2,
         ..
     } = Pio::new(p.PIO0, IrqsPioSpiAndFlash);
     setup_pio_task_sm0(&mut common, &mut sm0, p.PIN_22);
@@ -261,9 +243,9 @@ fn main() -> ! {
         p.PIN_20, // -- out 2
         p.PIN_21, // -- out 1
     );
-    setup_pio_task_sm2(&mut common, &mut sm2, p.PIN_2, p.PIN_3);
-    let mut dma_out_ref = dma::Channel::new(p.DMA_CH0, IrqsPioSpiAndFlash);
-    let mut dma_in_ref = dma::Channel::new(p.DMA_CH1, IrqsPioSpiAndFlash);
+    //setup_pio_task_sm2(&mut common, &mut sm2, p.PIN_2, p.PIN_3);
+    //let mut dma_out_ref = dma::Channel::new(p.DMA_CH0, IrqsPioSpiAndFlash);
+    //let mut dma_in_ref = dma::Channel::new(p.DMA_CH1, IrqsPioSpiAndFlash);
 
     // -- ---------------------------------------------------------------------
     // -- Core 1 task
@@ -296,7 +278,7 @@ fn main() -> ! {
     // -- Medium-priority executor: SWI_IRQ_2, priority level 2
     // interrupt::SWI_IRQ_2.set_priority(Priority::P2);
     // let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_2);
-    // spawner.spawn(unwrap!(osc_task(i2c1)));
+    // spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
 
     // -- High-priority executor: SWI_IRQ_1, priority level 1
     interrupt::SWI_IRQ_1.set_priority(Priority::P1);
@@ -310,7 +292,7 @@ fn main() -> ! {
         &ANALOG_OUT_5,
         &ANALOG_OUT_6,
     )));
-    //spawner.spawn(unwrap!(osc_task(i2c1)));
+    //spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
 
     // -- ---------------------------------------------------------------------
     // -- Core 0 task
@@ -328,6 +310,7 @@ fn main() -> ! {
             btn2,
             &CHANNEL_INPUTS
         )));
-        //spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
+        spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
+        spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
     });
 }

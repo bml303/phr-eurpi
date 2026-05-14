@@ -82,7 +82,7 @@ impl Mpc4725 {
         i2cio::write_byte(i2c, self.device_addr.value(), cmd, data).await
     }
 
-    pub async fn write_dac_value<T>(
+    pub async fn write_dac_value_fast<T>(
         &mut self,
         i2c: &mut I2c<'static, T, Async>,
         value: u16,
@@ -90,15 +90,36 @@ impl Mpc4725 {
     where
         T: PeripheralType + Instance,
     {
-        let cmd: u8 = MPC4725_WRITE_COMMAND_REGULAR | (((value >> 8) as u8) & 0xf);
-        let data: u8 = value as u8;
-        //debug!("Sending MPC4725 command: {:#08b} {:#08b}", cmd, data);
-        let cmd_data = [cmd, data];
-        let mut ops = [Operation::Write(&cmd_data), Operation::Write(&cmd_data)];
-        i2c.transaction(self.device_addr.value() as u8, &mut ops)
-
-        // let data_bytes = [cmd, data, cmd, data];
-        // i2c.write(self.device_addr.value(), )
+        let data_byte1: u8 = MPC4725_WRITE_COMMAND_FAST | (((value >> 8) as u8) & 0xf);
+        let data_byte2: u8 = (value & 0xff) as u8;
+        // debug!(
+        //     "Fast writing MPC4725 data bytes: {:#08b} {:#08b}",
+        //     data_byte1, data_byte2
+        // );
+        let data_bytes = [data_byte1, data_byte2];
         // i2cio::write_bytes(i2c, self.device_addr.value(), data_bytes).await
+        let mut ops = [Operation::Write(&data_bytes)];
+        i2c.transaction(self.device_addr.value() as u8, &mut ops)
+    }
+
+    pub async fn write_dac_value_regular<T>(
+        &mut self,
+        i2c: &mut I2c<'static, T, Async>,
+        value: u16,
+    ) -> Result<(), Error>
+    where
+        T: PeripheralType + Instance,
+    {
+        let data_byte1: u8 = MPC4725_WRITE_COMMAND_REGULAR;
+        let data_byte2: u8 = (value >> 8) as u8;
+        let data_byte3: u8 = ((value & 0xf) as u8) << 4;
+        // debug!(
+        //     "Regular writing MPC4725 data bytes: {:#08b} {:#08b}, {:#08b}",
+        //     data_byte1, data_byte2, data_byte3
+        // );
+        let data_bytes = [data_byte1, data_byte2, data_byte3];
+        //i2cio::write_bytes(i2c, self.device_addr.value(), data_bytes).await
+        let mut ops = [Operation::Write(&data_bytes)];
+        i2c.transaction(self.device_addr.value() as u8, &mut ops)
     }
 }

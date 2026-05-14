@@ -1,4 +1,3 @@
-use core::cmp::min;
 use defmt::*;
 use embassy_rp::{
     Peri,
@@ -161,7 +160,11 @@ pub async fn osc_task(
         //debug!("Writing to DAC...");
         for sample in &samples {
             // -- normalize the sample and send it to the DAC
-            mpc4725.write_dac_value(&mut i2c1, *sample).await.unwrap();
+            mpc4725
+                .write_dac_value_fast(&mut i2c1, *sample)
+                //.write_dac_value_regular(&mut i2c1, *sample)
+                .await
+                .unwrap();
             ticker.next().await;
         }
     }
