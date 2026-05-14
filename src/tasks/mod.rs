@@ -11,7 +11,7 @@ pub use analogout::{pio_task_sm1, setup_pio_task_sm1};
 pub use core0::core0_task;
 pub use core1::core1_task;
 pub use digitalin::{pio_task_sm0, setup_pio_task_sm0};
-pub use oscillator::{osc_task, setup_pio_task_sm2};
+pub use oscillator::{osc_task_dac, osc_task_generate, setup_pio_task_sm2};
 
 // pub const CHANNEL_OUT_1: u8 = 0;
 // pub const CHANNEL_OUT_2: u8 = 1;

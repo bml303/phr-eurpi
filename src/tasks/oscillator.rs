@@ -9,11 +9,14 @@ use embassy_rp::{
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 
+use crate::audio::oscillator::sine_oscillator::SineOscillator;
 use crate::io::i2c::mpc4725::*;
 
-use super::{ChannelOscillatorType, SAMPLE_RATE_48KHZ, SM2_CLOCK_DIVIDER_48_KHZ};
+use super::{
+    ChannelOscillatorType, SAMPLE_BLOCK_SIZE, SAMPLE_RATE_48KHZ, SM2_CLOCK_DIVIDER_48_KHZ,
+};
 
 // -- ---------------------------------------------------------------------
 // -- SM2 - MPC4725 i2c DAC output
@@ -137,11 +140,40 @@ pub fn setup_pio_task_sm2<'d>(
 }
 
 #[embassy_executor::task]
-pub async fn osc_task(
+pub async fn osc_task_generate(channel_oscillator: &'static ChannelOscillatorType) {
+    info!("Oscillator generate task started");
+    let sample_rate = SAMPLE_RATE_48KHZ;
+    //let frequency = 110.0;
+    let frequency = 440.0;
+    //let frequency = 880.0;
+    //let frequency = 5000.0;
+    let f = frequency / sample_rate;
+    let mut out = [0.0; SAMPLE_BLOCK_SIZE];
+    let mut samples = [0u16; SAMPLE_BLOCK_SIZE];
+    let mut osc = SineOscillator::new();
+    osc.init();
+    loop {
+        while channel_oscillator.free_capacity() > 0 {
+            //debug!("rendering...");
+            osc.render(f, &mut out);
+            for i in 0..out.len() {
+                // -- normalize the sample and send it to the DAC
+                samples[i] = ((out[i] + 1f32) * 4096f32 / 2f32) as u16;
+            }
+            channel_oscillator.send(samples).await;
+            Timer::after_micros(2).await;
+        }
+        //info!("Oscillator generate task: Channel saturated");
+        Timer::after_millis(5).await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn osc_task_dac(
     mut i2c1: I2c<'static, I2C1, I2cAsync>,
     channel_oscillator: &'static ChannelOscillatorType,
 ) {
-    info!("Oscillator task started");
+    info!("Oscillator DAC task started");
     // -- setup MPC47
     let mut mpc4725 = match Mpc4725::new(&mut i2c1, Mpc4725DeviceAddress::Default).await {
         Ok(mpc4725) => mpc4725,
@@ -157,7 +189,7 @@ pub async fn osc_task(
     let mut ticker = Ticker::every(Duration::from_nanos(every_nanos));
     loop {
         let samples = channel_oscillator.receive().await;
-        //debug!("Writing to DAC...");
+        //debug!("Oscillator DAC task: Samples received");
         for sample in &samples {
             // -- normalize the sample and send it to the DAC
             mpc4725

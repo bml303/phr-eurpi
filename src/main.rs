@@ -57,13 +57,11 @@ mod io;
 mod tasks;
 mod utils;
 
-use audio::oscillator::sine_oscillator::SineOscillator;
 use io::flash::FLASH_SIZE;
-use io::i2c::mpc4725::{Mpc4725, Mpc4725DeviceAddress};
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C1_BUS_FREQUENCY_1_MBIT, core0_task, core1_task,
-    osc_task, pio_task_sm0, pio_task_sm1, setup_pio_task_sm0, setup_pio_task_sm1,
-    setup_pio_task_sm2,
+    osc_task_dac, osc_task_generate, pio_task_sm0, pio_task_sm1, setup_pio_task_sm0,
+    setup_pio_task_sm1, setup_pio_task_sm2,
 };
 use utils::Debouncer;
 
@@ -71,10 +69,10 @@ const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
-static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
-static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
-static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
-static EXECUTOR_MED: InterruptExecutor = InterruptExecutor::new();
+static EXECUTOR_CORE0: StaticCell<Executor> = StaticCell::new();
+static EXECUTOR_CORE1: StaticCell<Executor> = StaticCell::new();
+// static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
+// static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
 
 static ANALOG_OUT_1: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_2: AtomicU8 = AtomicU8::new(0);
@@ -111,15 +109,15 @@ bind_interrupts!(struct IrqsAdc {
     ADC_IRQ_FIFO => AdcInterruptHandler;
 });
 
-#[interrupt]
-unsafe fn SWI_IRQ_0() {
-    unsafe { EXECUTOR_MED.on_interrupt() }
-}
+// #[interrupt]
+// unsafe fn SWI_IRQ_1() {
+//     unsafe { EXECUTOR_HIGH.on_interrupt() }
+// }
 
-#[interrupt]
-unsafe fn SWI_IRQ_1() {
-    unsafe { EXECUTOR_HIGH.on_interrupt() }
-}
+// #[interrupt]
+// unsafe fn SWI_IRQ_2() {
+//     unsafe { EXECUTOR_MEDIUM.on_interrupt() }
+// }
 
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
@@ -247,6 +245,18 @@ fn main() -> ! {
     //let mut dma_out_ref = dma::Channel::new(p.DMA_CH0, IrqsPioSpiAndFlash);
     //let mut dma_in_ref = dma::Channel::new(p.DMA_CH1, IrqsPioSpiAndFlash);
 
+    // -- Medium-priority executor: SWI_IRQ_2, priority level 3
+    // interrupt::SWI_IRQ_2.set_priority(Priority::P3);
+    // let spawner = EXECUTOR_MEDIUM.start(interrupt::SWI_IRQ_2);
+    // spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
+    //spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
+
+    // -- High-priority executor: SWI_IRQ_1, priority level 2
+    // interrupt::SWI_IRQ_1.set_priority(Priority::P2);
+    // let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
+    //spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
+    //spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
+
     // -- ---------------------------------------------------------------------
     // -- Core 1 task
     // -- ---------------------------------------------------------------------
@@ -257,7 +267,7 @@ fn main() -> ! {
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         move || {
-            let executor1 = EXECUTOR1.init(Executor::new());
+            let executor1 = EXECUTOR_CORE1.init(Executor::new());
             executor1.run(|spawner| {
                 spawner.spawn(unwrap!(core1_task(
                     display,
@@ -269,37 +279,19 @@ fn main() -> ! {
                     &ANALOG_OUT_5,
                     &ANALOG_OUT_6,
                     &CHANNEL_INPUTS,
-                    &CHANNEL_OSCILLATOR,
                 )));
+                //spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
+                //spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
             });
         },
     );
-
-    // -- Medium-priority executor: SWI_IRQ_2, priority level 2
-    // interrupt::SWI_IRQ_2.set_priority(Priority::P2);
-    // let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_2);
-    // spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
-
-    // -- High-priority executor: SWI_IRQ_1, priority level 1
-    interrupt::SWI_IRQ_1.set_priority(Priority::P1);
-    let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
-    spawner.spawn(unwrap!(pio_task_sm1(
-        sm1,
-        &ANALOG_OUT_1,
-        &ANALOG_OUT_2,
-        &ANALOG_OUT_3,
-        &ANALOG_OUT_4,
-        &ANALOG_OUT_5,
-        &ANALOG_OUT_6,
-    )));
-    //spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
 
     // -- ---------------------------------------------------------------------
     // -- Core 0 task
     // -- ---------------------------------------------------------------------
 
     // -- run output task on core 0
-    let executor0 = EXECUTOR0.init(Executor::new());
+    let executor0 = EXECUTOR_CORE0.init(Executor::new());
     executor0.run(|spawner| {
         spawner.spawn(unwrap!(core0_task(
             adc,
@@ -311,6 +303,16 @@ fn main() -> ! {
             &CHANNEL_INPUTS
         )));
         spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
-        spawner.spawn(unwrap!(osc_task(i2c1, &CHANNEL_OSCILLATOR)));
+        spawner.spawn(unwrap!(pio_task_sm1(
+            sm1,
+            &ANALOG_OUT_1,
+            &ANALOG_OUT_2,
+            &ANALOG_OUT_3,
+            &ANALOG_OUT_4,
+            &ANALOG_OUT_5,
+            &ANALOG_OUT_6,
+        )));
+        spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
+        spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
     });
 }
