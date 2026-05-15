@@ -1,4 +1,5 @@
 use defmt::*;
+use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
     peripherals::PIO1,
@@ -15,9 +16,9 @@ use super::SM0_CLOCK_DIVIDER_48_KHZ;
 // -- SM0 - Digital Input
 // -- ---------------------------------------------------------------------
 
-pub fn setup_pio_task_sm0<'d>(
+pub fn setup_pio_task_sm3<'d>(
     pio: &mut Common<'d, PIO1>,
-    sm0: &mut StateMachine<'d, PIO1, 0>,
+    sm3: &mut StateMachine<'d, PIO1, 3>,
     pin: Peri<'d, impl PioPin>,
 ) {
     // -- read digital input triggers
@@ -36,18 +37,19 @@ pub fn setup_pio_task_sm0<'d>(
     cfg.clock_divider = calculate_pio_clock_divider(SM0_CLOCK_DIVIDER_48_KHZ);
     cfg.shift_in.auto_fill = true;
     cfg.shift_in.direction = ShiftDirection::Right;
-    sm0.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
-    sm0.set_config(&cfg);
+    sm3.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
+    sm3.set_config(&cfg);
 }
 
 #[embassy_executor::task]
-pub async fn pio_task_sm0(
+pub async fn pio_task_sm3(
     mut irq3: Irq<'static, PIO1, 3>,
-    mut sm0: StateMachine<'static, PIO1, 0>,
+    mut sm3: StateMachine<'static, PIO1, 3>,
 ) {
-    sm0.set_enable(true);
+    sm3.set_enable(true);
     loop {
         irq3.wait().await;
         info!("IRQ trigged");
+        yield_now().await;
     }
 }

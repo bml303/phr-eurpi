@@ -91,7 +91,7 @@ pub fn setup_pio_task_sm2<'d>(
 #[embassy_executor::task]
 pub async fn pio_task_sm2(
     mut sm2: StateMachine<'static, PIO1, 2>,
-    mut dma_out_ref: Option<DmaChannel<'static>>,
+    mut dma_out_ch: Option<DmaChannel<'static>>,
 ) {
     info!("pio_task_sm2 started");
     // -- setup oscillator
@@ -116,17 +116,13 @@ pub async fn pio_task_sm2(
         let data_byte_1 = (sample >> 8) as u8;
         let data_byte_2 = (sample & 0xff) as u8;
         let data_out = (addr << 24) | ((data_byte_1 as u32) << 16) | ((data_byte_2 as u32) << 8);
-        if let Some(dma_out_ref) = dma_out_ref.as_mut() {
-            let dout = [data_out];
-            sm2.tx().dma_push(dma_out_ref, &dout, false).await;
+        if let Some(dma_out_ch) = dma_out_ch.as_mut() {
+            sm2.tx().dma_push(dma_out_ch, &[data_out], false).await;
         } else {
-            if !sm2.tx().full() {
-                sm2.tx().push(data_out);
-            }
+            sm2.tx().wait_push(data_out).await;
         }
-        //debug!("Pushed data to SM2 TX FIFO")
         yield_now().await;
-        //ticker.next().await;
+        Timer::after(Duration::from_micros(1)).await;
     }
 }
 
@@ -162,14 +158,6 @@ pub async fn pio_task_sm2(
 //         //info!("IRQ 1 trigged - MPC4725 state machine requests data");
 //     }
 // }
-
-#[embassy_executor::task]
-pub async fn pio_task_sm2_irq1(mut irq1: Irq<'static, PIO1, 1>) {
-    loop {
-        irq1.wait().await;
-        info!("IRQ 1 trigged - MPC4725 ACK received...");
-    }
-}
 
 #[embassy_executor::task]
 pub async fn pio_task_sm2_irq2(mut irq2: Irq<'static, PIO1, 2>) {

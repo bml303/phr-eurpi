@@ -2,18 +2,16 @@ use embassy_rp::gpio::Level;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 
 mod analogout;
-mod core0;
-mod core1;
 mod digitalin;
+mod inputsdisplay;
 mod oscillator;
 
 pub use analogout::{pio_task_sm1, setup_pio_task_sm1};
-pub use core0::core0_task;
-pub use core1::core1_task;
-pub use digitalin::{pio_task_sm0, setup_pio_task_sm0};
+pub use digitalin::{pio_task_sm3, setup_pio_task_sm3};
+pub use inputsdisplay::inputs_display_task;
 pub use oscillator::{
-    osc_task_consolidated, osc_task_dac, osc_task_generate, pio_task_sm2, pio_task_sm2_irq1,
-    pio_task_sm2_irq2, setup_pio_task_sm2,
+    osc_task_consolidated, osc_task_dac, osc_task_generate, pio_task_sm2, pio_task_sm2_irq2,
+    setup_pio_task_sm2,
 };
 
 // pub const CHANNEL_OUT_1: u8 = 0;

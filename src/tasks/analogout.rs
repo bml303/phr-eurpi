@@ -3,6 +3,7 @@ use core::cmp::min;
 use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
+    dma::Channel as DmaChannel,
     peripherals::PIO1,
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin, PioPin,
@@ -10,16 +11,10 @@ use embassy_rp::{
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
-//use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 use portable_atomic::{AtomicU8, Ordering};
 
-use super::{
-    PWM_TX_FIFO_VALUES,
-    PWM_VALUE_CYCLE_MAX,
-    PWM_VALUE_MAX,
-    SM1_CLOCK_DIVIDER_1_MHZ,
-    //TICKER_EVERY_50_MICROS,
-};
+use super::{PWM_TX_FIFO_VALUES, PWM_VALUE_CYCLE_MAX, PWM_VALUE_MAX, SM1_CLOCK_DIVIDER_1_MHZ};
 
 // -- ---------------------------------------------------------------------
 // -- SM1 - Analog Output
@@ -36,15 +31,10 @@ pub fn setup_pio_task_sm1<'d>(
     pin_out6: Peri<'d, impl PioPin>,
 ) {
     let prg = pio_asm!(
-        "set pins, 0"
-        "pull block"
-        ".wrap_target",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        "out pins, 6",
-        ".wrap",
+        r"
+        .wrap_target
+            out pins, 6
+        .wrap",
     );
     // -- setup sm1
     let mut cfg = PioConfig::default();
@@ -114,6 +104,7 @@ fn update_pwm_out_values(
 #[embassy_executor::task]
 pub async fn pio_task_sm1(
     mut sm1: StateMachine<'static, PIO1, 1>,
+    mut dma_out_ch: Option<DmaChannel<'static>>,
     analog_out_1: &'static AtomicU8,
     analog_out_2: &'static AtomicU8,
     analog_out_3: &'static AtomicU8,
@@ -135,8 +126,8 @@ pub async fn pio_task_sm1(
     // -- the duty cycle has to be in the range of 0 to 100
     let mut pwm_duty_cycle_count = 0;
     // -- enable state machine and start loop
-    sm1.set_enable(true);
     sm1.tx().push(0);
+    sm1.set_enable(true);
     let mut pwm_out_bits_last = u32::MAX;
     loop {
         //let start = Instant::now();
@@ -158,8 +149,10 @@ pub async fn pio_task_sm1(
         // -- push PWM bits into the TX FIFO if there is a change
         if pwm_out_bits != pwm_out_bits_last {
             pwm_out_bits_last = pwm_out_bits;
-            if !sm1.tx().full() {
-                sm1.tx().push(pwm_out_bits);
+            if let Some(dma_out_ch) = dma_out_ch.as_mut() {
+                sm1.tx().dma_push(dma_out_ch, &[pwm_out_bits], false).await;
+            } else {
+                sm1.tx().wait_push(pwm_out_bits).await;
             }
         }
         // -- check if cycle is finished, restart with new values if so
@@ -178,21 +171,6 @@ pub async fn pio_task_sm1(
             );
         }
         yield_now().await;
-        // let elapsed_microsecs = start.elapsed().as_micros();
-        // if elapsed_microsecs < 10 {
-        //     Timer::after(Duration::from_micros(10 - elapsed_microsecs)).await;
-        // }
-        // if elapsed_microsecs > TICKER_EVERY_50_MICROS {
-        //     warn!(
-        //         "SM1 loop exceeded cycle time: {} micro seconds",
-        //         elapsed_microsecs
-        //     )
-        // } else if elapsed_microsecs < TICKER_EVERY_50_MICROS {
-        //     // -- wait for the next tick
-        //     Timer::after(Duration::from_micros(
-        //         TICKER_EVERY_50_MICROS - elapsed_microsecs,
-        //     ))
-        //     .await;
-        // }
+        Timer::after(Duration::from_micros(1)).await;
     }
 }
