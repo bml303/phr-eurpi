@@ -95,14 +95,7 @@ pub fn setup_pio_task_sm2<'d>(
             pull ifempty block  side 1          ; -- 01 - load 32 bits from TX FIFO into OSR, SCL high
             set pins, 0         side 1 [2]      ; -- 02 - START condition SDA to low, SCL high
             set x, 7            side 1          ; -- 03 - write 8 bits, SCL high
-            set y, 2            side 0          ; -- 04 - write 3 bytes, SCL low
-            jmp do_bytes        side 0          ; -- 05 - jump to bit processing loop, SCL low
-        do_stop:
-            set pins, 0         side 0 [1]      ; -- 06 - SDA low, SCL low
-            out null, 32        side 0          ; -- 07 - remainder of OSR is invalid
-            set pins, 0         side 1 [3]      ; -- 08 - SDA low, SCL high
-            set pins, 1         side 1 [2]      ; -- 09 - STOP condition SDA to high, SCL high
-        .wrap
+            set y, 2            side 0 [1]      ; -- 04 - write 3 bytes, SCL low
         do_bytes:
             set pindirs, 1      side 0          ; -- 10 - SDA output
         bit_loop:
@@ -111,11 +104,17 @@ pub fn setup_pio_task_sm2<'d>(
             jmp x-- bit_loop    side 0 [2]      ; -- 13 - jump if x > 0 prior to decrement
             set pindirs, 0      side 0          ; -- 14 - SDA input
             set x, 7            side 1 [3]      ; -- 15 - confirm SDA value with SCL pulse
-            jmp pin do_nack     side 0          ; -- 16 - SDA output
-            jmp y-- do_bytes    side 0          ; -- 17 - jump if y > 0 prior to decrement
-            jmp do_stop         side 0          ; -- 18 - return to main loop
+            jmp pin do_nack     side 0          ; -- 16 - Check ACK from MPC4725
+            set pindirs, 1      side 0          ; -- 17 - SDA output
+            jmp y-- do_bytes    side 0          ; -- 18 - jump if y > 0 prior to decrement
+        do_stop:
+            set pins, 0         side 0 [1]      ; -- 06 - SDA low, SCL low
+            out null, 32        side 0          ; -- 07 - remainder of OSR is invalid
+            set pins, 0         side 1 [3]      ; -- 08 - SDA low, SCL high
+            set pins, 1         side 1 [2]      ; -- 09 - STOP condition SDA to high, SCL high
+        .wrap
         do_nack:
-            ;irq wait 2         side 1          ; -- 19 - stop, SCL high, ask for help
+            irq nowait 2        side 1          ; -- 19 - stop, SCL high, ask for help
             jmp entry_point     side 1          ; -- 20 - read next bit from OSR, SCL low
         ",
     );
@@ -124,13 +123,13 @@ pub fn setup_pio_task_sm2<'d>(
     let mut sda_pin = pio.make_pio_pin(sda_pin);
     //sda_pin.set_output_enable_inversion(true);
     sda_pin.set_pull(embassy_rp::gpio::Pull::Up);
-    sda_pin.set_slew_rate(SlewRate::Slow);
+    //sda_pin.set_slew_rate(SlewRate::Slow);
     //sda_pin.set_drive_strength(Drive::_2mA);
     //sda_pin.set_schmitt(true);
     let mut scl_pin = pio.make_pio_pin(scl_pin);
     //scl_pin.set_output_enable_inversion(true);
     scl_pin.set_pull(embassy_rp::gpio::Pull::Up);
-    scl_pin.set_slew_rate(SlewRate::Slow);
+    //scl_pin.set_slew_rate(SlewRate::Slow);
     //scl_pin.set_drive_strength(Drive::_2mA);
     //scl_pin.set_schmitt(true);
     let mut cfg = PioConfig::default();
@@ -142,7 +141,8 @@ pub fn setup_pio_task_sm2<'d>(
     cfg.set_set_pins(&[&sda_pin]);
     cfg.set_out_pins(&[&sda_pin]);
     cfg.set_jmp_pin(&sda_pin);
-    cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ);
+    //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kHz
+    cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
     cfg.out_sticky = true;
     cfg.shift_out.auto_fill = false;
     cfg.shift_out.direction = ShiftDirection::Left;
@@ -162,8 +162,8 @@ pub async fn pio_task_sm2(
     // -- setup oscillator
     let sample_rate = SAMPLE_RATE_48KHZ;
     //let frequency = 110.0;
-    let frequency = 440.0;
-    //let frequency = 880.0;
+    //let frequency = 440.0;
+    let frequency = 880.0;
     //let frequency = 5000.0;
     let f = frequency / sample_rate;
     let mut out = [0.0; SAMPLE_BLOCK_SIZE];
@@ -192,36 +192,44 @@ pub async fn pio_task_sm2(
     }
 }
 
+// #[embassy_executor::task]
+// pub async fn pio_task_sm2_irq1(
+//     mut irq1: Irq<'static, PIO0, 1>,
+//     mut sm2: StateMachine<'static, PIO0, 2>,
+// ) {
+//     // -- setup oscillator
+//     let sample_rate = SAMPLE_RATE_48KHZ;
+//     //let frequency = 110.0;
+//     let frequency = 440.0;
+//     //let frequency = 880.0;
+//     //let frequency = 5000.0;
+//     let f = frequency / sample_rate;
+//     let mut out = [0.0; SAMPLE_BLOCK_SIZE];
+//     let mut osc = SineOscillator::new();
+//     osc.init();
+//     sm2.set_enable(true);
+//     loop {
+//         osc.render(f, &mut out);
+//         let sample = ((out[0] + 1f32) * 4096f32 / 2f32) as u16;
+//         let addr = 0b11000100;
+//         let data_byte_1 = (sample >> 8) as u8;
+//         let data_byte_2 = (sample & 0xff) as u8;
+//         let data_out = (addr as u32) << 24 | (data_byte_1 as u32) << 16 | (data_byte_2 as u32) << 8;
+//         if !sm2.tx().full() {
+//             sm2.tx().push(data_out);
+//             //debug!("Pushed data to SM2 TX FIFO")
+//         }
+//         //yield_now().await;
+//         irq1.wait().await;
+//         //info!("IRQ 1 trigged - MPC4725 state machine requests data");
+//     }
+// }
+
 #[embassy_executor::task]
-pub async fn pio_task_sm2_irq1(
-    mut irq1: Irq<'static, PIO0, 1>,
-    mut sm2: StateMachine<'static, PIO0, 2>,
-) {
-    // -- setup oscillator
-    let sample_rate = SAMPLE_RATE_48KHZ;
-    //let frequency = 110.0;
-    let frequency = 440.0;
-    //let frequency = 880.0;
-    //let frequency = 5000.0;
-    let f = frequency / sample_rate;
-    let mut out = [0.0; SAMPLE_BLOCK_SIZE];
-    let mut osc = SineOscillator::new();
-    osc.init();
-    sm2.set_enable(true);
+pub async fn pio_task_sm2_irq1(mut irq1: Irq<'static, PIO0, 1>) {
     loop {
-        osc.render(f, &mut out);
-        let sample = ((out[0] + 1f32) * 4096f32 / 2f32) as u16;
-        let addr = 0b11000100;
-        let data_byte_1 = (sample >> 8) as u8;
-        let data_byte_2 = (sample & 0xff) as u8;
-        let data_out = (addr as u32) << 24 | (data_byte_1 as u32) << 16 | (data_byte_2 as u32) << 8;
-        if !sm2.tx().full() {
-            sm2.tx().push(data_out);
-            //debug!("Pushed data to SM2 TX FIFO")
-        }
-        //yield_now().await;
         irq1.wait().await;
-        //info!("IRQ 1 trigged - MPC4725 state machine requests data");
+        info!("IRQ 1 trigged - MPC4725 ACK received...");
     }
 }
 
@@ -229,7 +237,7 @@ pub async fn pio_task_sm2_irq1(
 pub async fn pio_task_sm2_irq2(mut irq2: Irq<'static, PIO0, 2>) {
     loop {
         irq2.wait().await;
-        // error!("IRQ 2 trigged - MPC4725 state machine is in trouble...");
+        error!("IRQ 2 trigged - MPC4725 state machine is in trouble...");
     }
 }
 

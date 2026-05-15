@@ -293,6 +293,7 @@ fn main() -> ! {
                 //     &ANALOG_OUT_6,
                 //     &CHANNEL_INPUTS,
                 // )));
+                spawner.spawn(unwrap!(pio_task_sm2_irq1(irq1)));
                 spawner.spawn(unwrap!(pio_task_sm2_irq2(irq2)));
                 //spawner.spawn(unwrap!(pio_task_sm2(sm2)));
                 //spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
