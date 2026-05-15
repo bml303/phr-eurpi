@@ -1,7 +1,7 @@
 use defmt::*;
 use embassy_rp::{
     Peri,
-    peripherals::PIO0,
+    peripherals::PIO1,
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, Irq, PioPin, ShiftDirection,
         StateMachine, program::pio_asm,
@@ -16,8 +16,8 @@ use super::SM0_CLOCK_DIVIDER_48_KHZ;
 // -- ---------------------------------------------------------------------
 
 pub fn setup_pio_task_sm0<'d>(
-    pio: &mut Common<'d, PIO0>,
-    sm0: &mut StateMachine<'d, PIO0, 0>,
+    pio: &mut Common<'d, PIO1>,
+    sm0: &mut StateMachine<'d, PIO1, 0>,
     pin: Peri<'d, impl PioPin>,
 ) {
     // -- read digital input triggers
@@ -42,8 +42,8 @@ pub fn setup_pio_task_sm0<'d>(
 
 #[embassy_executor::task]
 pub async fn pio_task_sm0(
-    mut irq3: Irq<'static, PIO0, 3>,
-    mut sm0: StateMachine<'static, PIO0, 0>,
+    mut irq3: Irq<'static, PIO1, 3>,
+    mut sm0: StateMachine<'static, PIO1, 0>,
 ) {
     sm0.set_enable(true);
     loop {

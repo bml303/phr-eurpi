@@ -5,7 +5,7 @@ use embassy_rp::{
     dma::Channel as DmaChannel,
     gpio::{Drive, Level, SlewRate},
     i2c::{Async as I2cAsync, I2c},
-    peripherals::{I2C1, PIO0},
+    peripherals::{I2C1, PIO1},
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin, Irq, PioPin,
         ShiftDirection, StateMachine, program::pio_asm,
@@ -27,66 +27,14 @@ use super::{
 // -- ---------------------------------------------------------------------
 
 pub fn setup_pio_task_sm2<'d>(
-    pio: &mut Common<'d, PIO0>,
-    sm2: &mut StateMachine<'d, PIO0, 2>,
+    pio: &mut Common<'d, PIO1>,
+    sm2: &mut StateMachine<'d, PIO1, 2>,
     sda_pin: Peri<'d, impl PioPin>,
     scl_pin: Peri<'d, impl PioPin>,
 ) {
     // -- continouously write data to MPC4725 DAC
     // -- side 0 is SCL
     let prg = pio_asm!(
-        // r"
-        // .origin 0
-        // .side_set 2 opt                     ; -- SDA, SCL are side set
-        // do_nack:
-        //     irq wait 4      side 0b11       ; -- stop, SDA & SCL high, ask for help
-        //     jmp entry_point side 0b11       ; -- restart processing
-        // do_0:
-        //     jmp x-- nojmp_0 side 0b00       ; -- decrement x with pseudo-jump, set zero value on SDA
-        // nojmp_0:
-        //     jmp !x last_0   side 0b01 [1]   ; -- confirm value with SCL pulse
-        //     out y, 1        side 0b00       ; -- get next bit from OSR, keep SDA low, pull SCL down
-        //     jmp y-- into_1  side 0b00       ; -- keep SDA low, pull SCL down
-        // into_0:
-        //     jmp do_0        side 0b00       ; -- set zero value on SDA
-        // last_0:
-        //     set pindirs, 0  side 0b00 [1]   ; -- SDA input, SDA low, SCL down
-        //     jmp pin do_nack side 0b01 [1]   ; -- confirm SDA value with SCL pulse
-        //     set pindirs, 1  side 0b00       ; -- SDA output, confirm SDA value with SCL pulse
-        //     jmp entry_point side 0b00       ; -- byte done
-        // do_1:
-        //     jmp x-- nojmp_1 side 0b10       ; -- decrement x with pseudo-jump, set one value on SDA
-        // nojmp_1:
-        //     jmp !x last_1   side 0b11 [1]   ; -- confirm value with SCL pulse
-        //     out y, 1        side 0b10       ; -- get next bit from OSR, keep SDA high, pull SCL down
-        //     jmp !y into_0   side 0b10       ; -- keep SDA high, pull SCL down
-        // into_1:
-        //     jmp do_1        side 0b10       ; -- set one value on SDA
-        // last_1:
-        //     set pindirs, 0  side 0b10 [1]   ; -- SDA input, SDA high, SCL down
-        //     jmp pin do_nack side 0b11 [1]   ; -- confirm SDA value with SCL pulse
-        //     set pindirs, 1  side 0b10 [1]   ; -- SDA output, confirm SDA value with SCL pulse
-
-        // do_byte:
-        //     out y, 1                        ; -- read signal bit from OSR
-        //     jmp !y do_stop                  ; -- non-zero indicating STOP
-        //     out y, 1                        ; -- read next data bit from OSR
-        //     set x, 7                        ; -- loop 8 times
-        //     jmp y-- do_1                    ; -- jump if y > 0 prior to decrement
-        //     jmp do_0
-        // do_stop:
-        //     out null, 32    side 0b01 [1]   ; -- reminder of OSR is invalid, SDA low, SCL high
-        //     nop             side 0b11 [1]   ; -- STOP condition
-
-        // public entry_point:
-        // .wrap_target
-        //     out y, 1        side 0b11       ; -- read next bit from OSR, SDA high, SCL high (idle)
-        //     set x, 7        side 0b01       ; -- loop 8 times, START condition SDA low, SCL high
-        //     jmp y-- into_1  side 0b00 [1]   ; -- jump if y > 0 prior to decrement
-        //     jmp do_0        side 0b00       ; --
-        //     nop
-        // .wrap
-        // ",
         r"
         .side_set 1                             ; -- SCL is side set
         public entry_point:
@@ -95,47 +43,34 @@ pub fn setup_pio_task_sm2<'d>(
             pull ifempty block  side 1          ; -- 01 - load 32 bits from TX FIFO into OSR, SCL high
             set pins, 0         side 1 [2]      ; -- 02 - START condition SDA to low, SCL high
             set x, 7            side 1          ; -- 03 - write 8 bits, SCL high
-            set y, 2            side 0 [1]      ; -- 04 - write 3 bytes, SCL low
-        do_bytes:
-            set pindirs, 1      side 0          ; -- 10 - SDA output
+            set y, 2            side 0 [2]      ; -- 04 - write 3 bytes, SCL low
         bit_loop:
-            out pins, 1         side 0          ; -- 11 - read next bit from OSR, SCL low
-            nop                 side 1 [3]      ; -- 12 - confirm SDA value with SCL pulse
-            jmp x-- bit_loop    side 0 [2]      ; -- 13 - jump if x > 0 prior to decrement
-            set pindirs, 0      side 0          ; -- 14 - SDA input
-            set x, 7            side 1 [3]      ; -- 15 - confirm SDA value with SCL pulse
-            jmp pin do_nack     side 0          ; -- 16 - Check ACK from MPC4725
-            set pindirs, 1      side 0          ; -- 17 - SDA output
-            jmp y-- do_bytes    side 0          ; -- 18 - jump if y > 0 prior to decrement
+            out pins, 1         side 0          ; -- 05 - read next bit from OSR, SCL low
+            nop                 side 1 [3]      ; -- 06 - confirm SDA value with SCL pulse
+            jmp x-- bit_loop    side 0 [2]      ; -- 07 - jump if x > 0 prior to decrement
+            set pindirs, 0      side 0          ; -- 08 - SDA input
+            set x, 7            side 1 [3]      ; -- 09 - confirm SDA value with SCL pulse
+            jmp pin do_nack     side 0          ; -- 10 - Check ACK from MPC4725
+            set pindirs, 1      side 0          ; -- 11 - SDA output
+            jmp y-- bit_loop    side 0          ; -- 12 - jump if y > 0 prior to decrement
         do_stop:
-            set pins, 0         side 0 [1]      ; -- 06 - SDA low, SCL low
-            out null, 32        side 0          ; -- 07 - remainder of OSR is invalid
-            set pins, 0         side 1 [3]      ; -- 08 - SDA low, SCL high
-            set pins, 1         side 1 [2]      ; -- 09 - STOP condition SDA to high, SCL high
+            set pins, 0         side 0 [1]      ; -- 13 - SDA low, SCL low
+            out null, 32        side 0          ; -- 14 - remainder of OSR is invalid
+            set pins, 0         side 1 [3]      ; -- 15 - SDA low, SCL high
+            set pins, 1         side 1 [2]      ; -- 16 - STOP condition SDA to high, SCL high
         .wrap
         do_nack:
-            irq nowait 2        side 1          ; -- 19 - stop, SCL high, ask for help
-            jmp entry_point     side 1          ; -- 20 - read next bit from OSR, SCL low
+            irq nowait 2        side 0 [2]      ; -- 17 - indicate error, SCL high
+            jmp entry_point     side 1          ; -- 18 - continue with start condition
         ",
     );
     // -- setup sm2
-    info!("Setting up SM2");
     let mut sda_pin = pio.make_pio_pin(sda_pin);
-    //sda_pin.set_output_enable_inversion(true);
     sda_pin.set_pull(embassy_rp::gpio::Pull::Up);
-    //sda_pin.set_slew_rate(SlewRate::Slow);
-    //sda_pin.set_drive_strength(Drive::_2mA);
-    //sda_pin.set_schmitt(true);
     let mut scl_pin = pio.make_pio_pin(scl_pin);
-    //scl_pin.set_output_enable_inversion(true);
     scl_pin.set_pull(embassy_rp::gpio::Pull::Up);
-    //scl_pin.set_slew_rate(SlewRate::Slow);
-    //scl_pin.set_drive_strength(Drive::_2mA);
-    //scl_pin.set_schmitt(true);
     let mut cfg = PioConfig::default();
-    info!("Loading SM2 PIO program");
     let prg = pio.load_program(&prg.program);
-    info!("SM2 PIO program loaded");
     cfg.use_program(&prg, &[&scl_pin]);
     cfg.set_in_pins(&[&sda_pin, &scl_pin]);
     cfg.set_set_pins(&[&sda_pin]);
@@ -155,8 +90,8 @@ pub fn setup_pio_task_sm2<'d>(
 
 #[embassy_executor::task]
 pub async fn pio_task_sm2(
-    mut sm2: StateMachine<'static, PIO0, 2>,
-    //mut _dma_out_ref: DmaChannel<'static>,
+    mut sm2: StateMachine<'static, PIO1, 2>,
+    mut dma_out_ref: Option<DmaChannel<'static>>,
 ) {
     info!("pio_task_sm2 started");
     // -- setup oscillator
@@ -181,13 +116,16 @@ pub async fn pio_task_sm2(
         let data_byte_1 = (sample >> 8) as u8;
         let data_byte_2 = (sample & 0xff) as u8;
         let data_out = (addr << 24) | ((data_byte_1 as u32) << 16) | ((data_byte_2 as u32) << 8);
-        if !sm2.tx().full() {
-            sm2.tx().push(data_out);
-            //debug!("Pushed data to SM2 TX FIFO")
+        if let Some(dma_out_ref) = dma_out_ref.as_mut() {
+            let dout = [data_out];
+            sm2.tx().dma_push(dma_out_ref, &dout, false).await;
+        } else {
+            if !sm2.tx().full() {
+                sm2.tx().push(data_out);
+            }
         }
+        //debug!("Pushed data to SM2 TX FIFO")
         yield_now().await;
-        // let dout = [addr, data_byte_1, data_byte_2, 0]; // -- 32 bits of data
-        // sm2.tx().dma_push(&mut dma_out_ref, &dout, false).await;
         //ticker.next().await;
     }
 }
@@ -226,7 +164,7 @@ pub async fn pio_task_sm2(
 // }
 
 #[embassy_executor::task]
-pub async fn pio_task_sm2_irq1(mut irq1: Irq<'static, PIO0, 1>) {
+pub async fn pio_task_sm2_irq1(mut irq1: Irq<'static, PIO1, 1>) {
     loop {
         irq1.wait().await;
         info!("IRQ 1 trigged - MPC4725 ACK received...");
@@ -234,7 +172,7 @@ pub async fn pio_task_sm2_irq1(mut irq1: Irq<'static, PIO0, 1>) {
 }
 
 #[embassy_executor::task]
-pub async fn pio_task_sm2_irq2(mut irq2: Irq<'static, PIO0, 2>) {
+pub async fn pio_task_sm2_irq2(mut irq2: Irq<'static, PIO1, 2>) {
     loop {
         irq2.wait().await;
         error!("IRQ 2 trigged - MPC4725 state machine is in trouble...");

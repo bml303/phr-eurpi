@@ -23,9 +23,9 @@ pub use oscillator::{
 // pub const CHANNEL_OUT_5: u8 = 3;
 // pub const CHANNEL_OUT_6: u8 = 2;
 // pub const CHANNEL_INDEX_TO_NR: [usize; 6] = [1, 2, 6, 5, 4, 3];
-pub const I2C1_BUS_FREQUENCY_100_KBIT: u32 = 100_000;
-pub const I2C1_BUS_FREQUENCY_400_KBIT: u32 = 400_000;
-pub const I2C1_BUS_FREQUENCY_1_MBIT: u32 = 1_000_000;
+pub const I2C_BUS_FREQUENCY_100_KBIT: u32 = 100_000;
+pub const I2C_BUS_FREQUENCY_400_KBIT: u32 = 400_000;
+pub const I2C_BUS_FREQUENCY_1_MBIT: u32 = 1_000_000;
 
 pub const PWM_TX_FIFO_VALUES: u8 = 5;
 pub const PWM_VALUE_MAX: u8 = 250;
