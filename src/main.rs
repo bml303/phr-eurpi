@@ -22,7 +22,7 @@ use embassy_rp::{
     interrupt,
     interrupt::{InterruptExt, Priority},
     multicore::{Stack, spawn_core1},
-    peripherals::{DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
+    peripherals::{DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH10, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin,
         InterruptHandler as PioInterruptHandler, Irq, PinConfig, Pio, PioPin, ShiftDirection,
@@ -85,15 +85,11 @@ static ANALOG_OUT_4: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
 static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
 
-// Bind the RTC interrupt to the handler
-bind_interrupts!(struct IrqsRtc {
-    RTC_IRQ => embassy_rp::rtc::InterruptHandler;
-});
-
 bind_interrupts!(
-    struct IrqsPioDma {
+    struct IrqsAdcPioDma {
+        ADC_IRQ_FIFO => AdcInterruptHandler;
         PIO1_IRQ_0 => PioInterruptHandler<PIO1>;
-        DMA_IRQ_0 =>  dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH2>, dma::InterruptHandler<DMA_CH11>;
+        DMA_IRQ_0 =>  dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH2>, dma::InterruptHandler<DMA_CH10>, dma::InterruptHandler<DMA_CH11>;
     }
 );
 
@@ -103,10 +99,6 @@ bind_interrupts!(struct IrqsI2c0 {
 
 bind_interrupts!(struct IrqsI2c1 {
     I2C1_IRQ => i2c::InterruptHandler<I2C1>;
-});
-
-bind_interrupts!(struct IrqsAdc {
-    ADC_IRQ_FIFO => AdcInterruptHandler;
 });
 
 // #[interrupt]
@@ -190,7 +182,7 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
 
     let mut flash =
-        Flash::<_, embassy_rp::flash::Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH11, IrqsPioDma);
+        Flash::<_, embassy_rp::flash::Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH11, IrqsAdcPioDma);
     let (board_id, _flash_uid) = io::flash::check_flash(&mut flash);
     let board_id = utils::u64_to_hexstring(board_id);
     Text::with_baseline(board_id.as_str(), Point::zero(), text_style, Baseline::Top)
@@ -202,10 +194,11 @@ fn main() -> ! {
     // -- ADC / Temperature resources
     // -- ---------------------------------------------------------------------
 
-    let adc = Adc::new(p.ADC, IrqsAdc, AdcConfig::default());
-    let p26 = AdcChannel::new_pin(p.PIN_26, Pull::None);
-    let p27 = AdcChannel::new_pin(p.PIN_27, Pull::None);
-    let p28 = AdcChannel::new_pin(p.PIN_28, Pull::None);
+    let adc = Adc::new(p.ADC, IrqsAdcPioDma, AdcConfig::default());
+    let mut dma_ch10 = dma::Channel::new(p.DMA_CH10, IrqsAdcPioDma);
+    let adc_ch_ain = AdcChannel::new_pin(p.PIN_26, Pull::None);
+    let adc_ch_kn1 = AdcChannel::new_pin(p.PIN_27, Pull::None);
+    let adc_ch_kn2 = AdcChannel::new_pin(p.PIN_28, Pull::None);
     //let ts = AdcChannel::new_temp_sensor(p.ADC_TEMP_SENSOR);
     info!("ADC channels ready");
 
@@ -240,7 +233,7 @@ fn main() -> ! {
         mut sm2,
         mut sm3,
         ..
-    } = Pio::new(p.PIO1, IrqsPioDma);
+    } = Pio::new(p.PIO1, IrqsAdcPioDma);
     // -- PIO for analog outs
     setup_pio_task_sm1(
         &mut common,
@@ -252,13 +245,13 @@ fn main() -> ! {
         p.PIN_20, // -- out 2
         p.PIN_21, // -- out 1
     );
-    let dma_out_ch1 = dma::Channel::new(p.DMA_CH1, IrqsPioDma);
+    let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
     info!("pio_task_sm1 is setup");
     // -- PIO for MPC4725 DAC
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
     setup_pio_task_sm2(&mut common, &mut sm2, sda_1, scl_1);
-    let dma_out_ch2 = dma::Channel::new(p.DMA_CH2, IrqsPioDma);
+    let dma_ch2 = dma::Channel::new(p.DMA_CH2, IrqsAdcPioDma);
     info!("pio_task_sm2 is setup");
     // -- PIO for digital in (triggers)
     setup_pio_task_sm3(&mut common, &mut sm3, p.PIN_22);
@@ -278,7 +271,7 @@ fn main() -> ! {
             executor1.run(|spawner| {
                 spawner.spawn(unwrap!(pio_task_sm1(
                     sm1,
-                    Some(dma_out_ch1),
+                    Some(dma_ch1),
                     &ANALOG_OUT_1,
                     &ANALOG_OUT_2,
                     &ANALOG_OUT_3,
@@ -287,7 +280,7 @@ fn main() -> ! {
                     &ANALOG_OUT_6,
                 )));
                 spawner.spawn(unwrap!(pio_task_sm2_irq2(irq2)));
-                spawner.spawn(unwrap!(pio_task_sm2(sm2, Some(dma_out_ch2))));
+                spawner.spawn(unwrap!(pio_task_sm2(sm2, Some(dma_ch2))));
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
             });
         },
@@ -329,9 +322,10 @@ fn main() -> ! {
     executor0.run(|spawner| {
         spawner.spawn(unwrap!(inputs_display_task(
             adc,
-            p26,
-            p27,
-            p28,
+            adc_ch_ain,
+            adc_ch_kn1,
+            adc_ch_kn2,
+            dma_ch10,
             btn1,
             btn2,
             display,

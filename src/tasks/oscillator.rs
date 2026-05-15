@@ -91,7 +91,7 @@ pub fn setup_pio_task_sm2<'d>(
 #[embassy_executor::task]
 pub async fn pio_task_sm2(
     mut sm2: StateMachine<'static, PIO1, 2>,
-    mut dma_out_ch: Option<DmaChannel<'static>>,
+    mut dma_ch: Option<DmaChannel<'static>>,
 ) {
     info!("pio_task_sm2 started");
     // -- setup oscillator
@@ -116,8 +116,8 @@ pub async fn pio_task_sm2(
         let data_byte_1 = (sample >> 8) as u8;
         let data_byte_2 = (sample & 0xff) as u8;
         let data_out = (addr << 24) | ((data_byte_1 as u32) << 16) | ((data_byte_2 as u32) << 8);
-        if let Some(dma_out_ch) = dma_out_ch.as_mut() {
-            sm2.tx().dma_push(dma_out_ch, &[data_out], false).await;
+        if let Some(dma_ch) = dma_ch.as_mut() {
+            sm2.tx().dma_push(dma_ch, &[data_out], false).await;
         } else {
             sm2.tx().wait_push(data_out).await;
         }

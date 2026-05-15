@@ -104,7 +104,7 @@ fn update_pwm_out_values(
 #[embassy_executor::task]
 pub async fn pio_task_sm1(
     mut sm1: StateMachine<'static, PIO1, 1>,
-    mut dma_out_ch: Option<DmaChannel<'static>>,
+    mut dma_ch: Option<DmaChannel<'static>>,
     analog_out_1: &'static AtomicU8,
     analog_out_2: &'static AtomicU8,
     analog_out_3: &'static AtomicU8,
@@ -149,8 +149,8 @@ pub async fn pio_task_sm1(
         // -- push PWM bits into the TX FIFO if there is a change
         if pwm_out_bits != pwm_out_bits_last {
             pwm_out_bits_last = pwm_out_bits;
-            if let Some(dma_out_ch) = dma_out_ch.as_mut() {
-                sm1.tx().dma_push(dma_out_ch, &[pwm_out_bits], false).await;
+            if let Some(dma_ch) = dma_ch.as_mut() {
+                sm1.tx().dma_push(dma_ch, &[pwm_out_bits], false).await;
             } else {
                 sm1.tx().wait_push(pwm_out_bits).await;
             }
