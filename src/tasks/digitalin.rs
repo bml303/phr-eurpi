@@ -22,7 +22,6 @@ pub fn setup_pio_task_sm0<'d>(
 ) {
     // -- read digital input triggers
     let prg = pio_asm!(
-        ".origin 0",
         ".wrap_target",
         "wait 0 pin 0",
         "wait 1 pin 0",

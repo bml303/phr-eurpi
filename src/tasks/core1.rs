@@ -15,7 +15,7 @@ use embedded_graphics::{
 use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 
-use super::{ChannelInputsType, ChannelOscillatorType, PWM_VALUE_MAX};
+use super::{ChannelInputsType, PWM_VALUE_MAX};
 
 #[embassy_executor::task]
 pub async fn core1_task(
