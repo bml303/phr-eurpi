@@ -64,7 +64,7 @@ use io::{
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
     I2C_BUS_FREQUENCY_400_KBIT, inputs_display_task, osc_task_consolidated, osc_task_dac,
-    osc_task_generate, pio_task_sm1, pio_task_sm2, pio_task_sm2_irq2, pio_task_sm3,
+    osc_task_generate, pio_task_sm1, pio_task_sm2, pio_task_sm2_irq2, pio_task_sm3, pwm_analog_out,
     setup_pio_task_sm1, setup_pio_task_sm2, setup_pio_task_sm3,
 };
 use utils::Debouncer;
@@ -229,22 +229,22 @@ fn main() -> ! {
         mut common,
         irq2,
         irq3,
-        mut sm1,
+        //mut sm1,
         mut sm2,
         mut sm3,
         ..
     } = Pio::new(p.PIO1, IrqsAdcPioDma);
-    // -- PIO for analog outs
-    setup_pio_task_sm1(
-        &mut common,
-        &mut sm1,
-        p.PIN_16, // -- out 3
-        p.PIN_17, // -- out 4
-        p.PIN_18, // -- out 5
-        p.PIN_19, // -- out 6
-        p.PIN_20, // -- out 2
-        p.PIN_21, // -- out 1
-    );
+    // // -- PIO for analog outs
+    // setup_pio_task_sm1(
+    //     &mut common,
+    //     &mut sm1,
+    //     p.PIN_16, // -- out 3
+    //     p.PIN_17, // -- out 4
+    //     p.PIN_18, // -- out 5
+    //     p.PIN_19, // -- out 6
+    //     p.PIN_20, // -- out 2
+    //     p.PIN_21, // -- out 1
+    // );
     let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
     info!("pio_task_sm1 is setup");
     // -- PIO for MPC4725 DAC
@@ -269,9 +269,26 @@ fn main() -> ! {
         move || {
             let executor1 = EXECUTOR_CORE1.init(Executor::new());
             executor1.run(|spawner| {
-                spawner.spawn(unwrap!(pio_task_sm1(
-                    sm1,
-                    Some(dma_ch1),
+                // spawner.spawn(unwrap!(pio_task_sm1(
+                //     sm1,
+                //     Some(dma_ch1),
+                //     &ANALOG_OUT_1,
+                //     &ANALOG_OUT_2,
+                //     &ANALOG_OUT_3,
+                //     &ANALOG_OUT_4,
+                //     &ANALOG_OUT_5,
+                //     &ANALOG_OUT_6,
+                // )));
+                spawner.spawn(unwrap!(pwm_analog_out(
+                    p.PWM_SLICE0,
+                    p.PWM_SLICE1,
+                    p.PWM_SLICE2,
+                    p.PIN_21,
+                    p.PIN_20,
+                    p.PIN_16,
+                    p.PIN_17,
+                    p.PIN_18,
+                    p.PIN_19,
                     &ANALOG_OUT_1,
                     &ANALOG_OUT_2,
                     &ANALOG_OUT_3,

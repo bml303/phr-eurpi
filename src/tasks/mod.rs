@@ -6,7 +6,7 @@ mod digitalin;
 mod inputsdisplay;
 mod oscillator;
 
-pub use analogout::{pio_task_sm1, setup_pio_task_sm1};
+pub use analogout::{pio_task_sm1, pwm_analog_out, setup_pio_task_sm1};
 pub use digitalin::{pio_task_sm3, setup_pio_task_sm3};
 pub use inputsdisplay::inputs_display_task;
 pub use oscillator::{

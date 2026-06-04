@@ -4,12 +4,16 @@ use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
     dma::Channel as DmaChannel,
-    peripherals::PIO1,
+    peripherals::{
+        PIN_16, PIN_17, PIN_18, PIN_19, PIN_20, PIN_21, PIO1, PWM_SLICE0, PWM_SLICE1, PWM_SLICE2,
+        PWM_SLICE3, PWM_SLICE4, PWM_SLICE5, PWM_SLICE6,
+    },
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin, PioPin,
         ShiftDirection, StateMachine, program::pio_asm,
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
+    pwm::{Config as ConfigPwm, Pwm, SetDutyCycle},
 };
 use embassy_time::{Duration, Timer};
 use portable_atomic::{AtomicU8, Ordering};
@@ -172,5 +176,105 @@ pub async fn pio_task_sm1(
         }
         yield_now().await;
         Timer::after(Duration::from_micros(1)).await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn pwm_analog_out(
+    mut slice0: Peri<'static, PWM_SLICE0>,
+    mut slice1: Peri<'static, PWM_SLICE1>,
+    mut slice2: Peri<'static, PWM_SLICE2>,
+    pin_out1: Peri<'static, PIN_21>,
+    pin_out2: Peri<'static, PIN_20>,
+    pin_out3: Peri<'static, PIN_16>,
+    pin_out4: Peri<'static, PIN_17>,
+    pin_out5: Peri<'static, PIN_18>,
+    pin_out6: Peri<'static, PIN_19>,
+    analog_out_1: &'static AtomicU8,
+    analog_out_2: &'static AtomicU8,
+    analog_out_3: &'static AtomicU8,
+    analog_out_4: &'static AtomicU8,
+    analog_out_5: &'static AtomicU8,
+    analog_out_6: &'static AtomicU8,
+) {
+    // -- the top value sets the period of the PWM cycle
+    // -- a counter goes from 0 to top and then wraps around to 0
+    // -- every such wraparound is one PWM cycle
+    // -- here is how we get 25KHz:
+    let desired_freq_hz = 25_000;
+    let clock_freq_hz = embassy_rp::clocks::clk_sys_freq();
+    let divider = 16u8;
+    let period = (clock_freq_hz / (desired_freq_hz * divider as u32)) as u16 - 1;
+
+    let mut c = ConfigPwm::default();
+    c.top = period;
+    c.divider = divider.into();
+
+    let mut pwm_out_2_1 = Pwm::new_output_ab(slice2, pin_out2, pin_out1, c.clone());
+    let (mut pwm_out_2, mut pwm_out_1) = pwm_out_2_1.split();
+    let mut pwm_out_3_4 = Pwm::new_output_ab(slice0, pin_out3, pin_out4, c.clone());
+    let (mut pwm_out_3, mut pwm_out_4) = pwm_out_3_4.split();
+    let mut pwm_out_5_6 = Pwm::new_output_ab(slice1, pin_out5, pin_out6, c.clone());
+    let (mut pwm_out_5, mut pwm_out_6) = pwm_out_5_6.split();
+
+    let mut out_1_prev_percentage = 0;
+    let mut out_2_prev_percentage = 0;
+    let mut out_3_prev_percentage = 0;
+    let mut out_4_prev_percentage = 0;
+    let mut out_5_prev_percentage = 0;
+    let mut out_6_prev_percentage = 0;
+
+    loop {
+        let out_1_percentage =
+            ((min(analog_out_1.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+        let out_2_percentage =
+            ((min(analog_out_2.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+        let out_3_percentage =
+            ((min(analog_out_3.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+        let out_4_percentage =
+            ((min(analog_out_4.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+        let out_5_percentage =
+            ((min(analog_out_5.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+        let out_6_percentage =
+            ((min(analog_out_6.load(Ordering::Relaxed), PWM_VALUE_MAX) as u16 * 10) / 25) as u8;
+
+        if out_1_percentage != out_1_prev_percentage {
+            out_1_prev_percentage = out_1_percentage;
+            if let Some(pwm_out_1) = pwm_out_1.as_mut() {
+                let _ = pwm_out_1.set_duty_cycle_percent(out_1_percentage);
+            }
+        }
+        if out_2_percentage != out_2_prev_percentage {
+            out_2_prev_percentage = out_2_percentage;
+            if let Some(pwm_out_2) = pwm_out_2.as_mut() {
+                let _ = pwm_out_2.set_duty_cycle_percent(out_2_percentage);
+            }
+        }
+        if out_3_percentage != out_3_prev_percentage {
+            out_3_prev_percentage = out_3_percentage;
+            if let Some(pwm_out_3) = pwm_out_3.as_mut() {
+                let _ = pwm_out_3.set_duty_cycle_percent(out_3_percentage);
+            }
+        }
+        if out_4_percentage != out_4_prev_percentage {
+            out_4_prev_percentage = out_4_percentage;
+            if let Some(pwm_out_4) = pwm_out_4.as_mut() {
+                let _ = pwm_out_4.set_duty_cycle_percent(out_4_percentage);
+            }
+        }
+        if out_5_percentage != out_5_prev_percentage {
+            out_5_prev_percentage = out_5_percentage;
+            if let Some(pwm_out_5) = pwm_out_5.as_mut() {
+                let _ = pwm_out_5.set_duty_cycle_percent(out_5_percentage);
+            }
+        }
+        if out_6_percentage != out_6_prev_percentage {
+            out_6_prev_percentage = out_6_percentage;
+            if let Some(pwm_out_6) = pwm_out_6.as_mut() {
+                let _ = pwm_out_6.set_duty_cycle_percent(out_6_percentage);
+            }
+        }
+        yield_now().await;
+        Timer::after(Duration::from_millis(100)).await;
     }
 }
