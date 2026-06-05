@@ -43,7 +43,7 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.13", features = ["critical-section"] }
 portable-atomic-util = "0.2.7"
 rp-pac = { version="7.0", features = ["rp2040"] }
-ssd1306 = { version="0.10.0", default-features = true }
+ssd1306 = { version="0.10.0" }
 static_cell = "2"
 
 [profile.dev]

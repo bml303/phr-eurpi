@@ -48,7 +48,7 @@ use embedded_graphics::{
 };
 use heapless::String;
 use portable_atomic::{AtomicU8, Ordering};
-use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
+use ssd1306::{I2CDisplayInterface, Ssd1306, mode::TerminalMode, prelude::*};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -87,7 +87,7 @@ static EXECUTOR_CORE1: StaticCell<Executor> = StaticCell::new();
 // static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
 // static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
 //
-static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<32>, 10> = Channel::new();
+static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<14>, 10> = Channel::new();
 
 bind_interrupts!(
     struct IrqsAdcPioDma {
@@ -153,9 +153,9 @@ fn main() -> ! {
 
     // -- display config
     let interface = I2CDisplayInterface::new(i2c0);
-    let mut display = Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
-        .into_buffered_graphics_mode();
-    display.init().unwrap();
+    let display =
+        Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
+    //display.init().unwrap();
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
@@ -189,10 +189,11 @@ fn main() -> ! {
         Flash::<_, embassy_rp::flash::Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH11, IrqsAdcPioDma);
     let (board_id, _flash_uid) = io::flash::check_flash(&mut flash);
     let board_id = utils::u64_to_hexstring(board_id);
-    Text::with_baseline(board_id.as_str(), Point::zero(), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-    display.flush().unwrap();
+    info!("Board ID is {}", board_id);
+    // Text::with_baseline(board_id.as_str(), Point::zero(), text_style, Baseline::Top)
+    //     .draw(&mut display)
+    //     .unwrap();
+    // display.flush().unwrap();
 
     // -- ---------------------------------------------------------------------
     // -- ADC / Temperature resources
@@ -289,8 +290,8 @@ fn main() -> ! {
     //     p.PIN_20, // -- out 2
     //     p.PIN_21, // -- out 1
     // );
-    let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
-    info!("pio_task_sm1 is setup");
+    //let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
+    //info!("pio_task_sm1 is setup");
     // -- PIO for MPC4725 DAC
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
@@ -346,9 +347,7 @@ fn main() -> ! {
                 // -- digital input
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
                 // -- display
-                spawner.spawn(unwrap!(
-                    display_task(display, text_style, &DISPLAY_CHANNEL,)
-                ));
+                spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
             });
         },
     );

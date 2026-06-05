@@ -93,7 +93,7 @@ pub async fn inputs_task(
     mut analog_out_4: AnalogOutput<'static>,
     mut analog_out_5: AnalogOutput<'static>,
     mut analog_out_6: AnalogOutput<'static>,
-    display_channel: &'static Channel<CriticalSectionRawMutex, String<32>, 10>,
+    display_channel: &'static Channel<CriticalSectionRawMutex, String<14>, 10>,
 ) {
     // -- prepare analog out values
     analog_out_1.set_duty_cycle_percent(0);
@@ -131,18 +131,18 @@ pub async fn inputs_task(
         let kn1_val = 4096 - kn1_val;
         let kn2_val = 4096 - kn2_val;
         // -- update display
-        let mut status_string: String<32> = String::new();
+        let mut status_string: String<14> = String::new();
         let ain_hexstr = utils::u16_to_hexstring(ain_val);
         let _ = status_string.push_str(&ain_hexstr);
         let _ = match btn1_lvl {
-            Level::High => status_string.push_str(" + "),
-            Level::Low => status_string.push_str(" - "),
+            Level::High => status_string.push_str("+"),
+            Level::Low => status_string.push_str("-"),
         };
         let kn1_hexstr = utils::u16_to_hexstring(kn1_val);
         let _ = status_string.push_str(&kn1_hexstr);
         let _ = match btn2_lvl {
-            Level::High => status_string.push_str(" + "),
-            Level::Low => status_string.push_str(" - "),
+            Level::High => status_string.push_str("+"),
+            Level::Low => status_string.push_str("-"),
         };
         let kn2_hexstr = utils::u16_to_hexstring(kn2_val);
         let _ = status_string.push_str(&kn2_hexstr);
