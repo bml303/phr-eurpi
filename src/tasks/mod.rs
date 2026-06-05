@@ -26,7 +26,7 @@ pub const I2C_BUS_FREQUENCY_400_KBIT: u32 = 400_000;
 pub const I2C_BUS_FREQUENCY_1_MBIT: u32 = 1_000_000;
 
 pub const PWM_TX_FIFO_VALUES: u8 = 5;
-pub const PWM_VALUE_MAX: u8 = 250;
+pub const PWM_VALUE_MAX: u8 = 100;
 pub const PWM_VALUE_MIN: u8 = 0;
 pub const PWM_VALUE_CYCLE_MAX: u8 = PWM_VALUE_MAX / PWM_TX_FIFO_VALUES;
 

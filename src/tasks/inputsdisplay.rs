@@ -20,7 +20,7 @@ use heapless::HistoryBuf;
 use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 
-use crate::utils::{Debouncer, u64_to_hexstring};
+use crate::controls::{AnalogOutput, Debouncer};
 
 use super::{ChannelInputsType, PWM_VALUE_MAX};
 
@@ -101,26 +101,26 @@ pub async fn inputs_display_task(
         BufferedGraphicsMode<DisplaySize128x32>,
     >,
     text_style: MonoTextStyle<'static, BinaryColor>,
-    analog_out_1: &'static AtomicU8,
-    analog_out_2: &'static AtomicU8,
-    analog_out_3: &'static AtomicU8,
-    analog_out_4: &'static AtomicU8,
-    analog_out_5: &'static AtomicU8,
-    analog_out_6: &'static AtomicU8,
+    mut analog_out_1: AnalogOutput<'static>,
+    mut analog_out_2: AnalogOutput<'static>,
+    mut analog_out_3: AnalogOutput<'static>,
+    mut analog_out_4: AnalogOutput<'static>,
+    mut analog_out_5: AnalogOutput<'static>,
+    mut analog_out_6: AnalogOutput<'static>,
 ) {
     // // -- clear screen
     let p0 = Point::zero();
     let p1 = Point::new(0, 16);
     let p2 = Point::new(128, 32);
-    display.clear(BinaryColor::Off).unwrap();
-    display.flush().unwrap();
+    // display.clear(BinaryColor::Off).unwrap();
+    // display.flush().unwrap();
     // -- prepare analog out values
-    analog_out_1.store(0, Ordering::Relaxed);
-    analog_out_2.store(0, Ordering::Relaxed);
-    analog_out_3.store(PWM_VALUE_MAX, Ordering::Relaxed);
-    analog_out_4.store(PWM_VALUE_MAX / 2, Ordering::Relaxed);
-    analog_out_5.store(PWM_VALUE_MAX, Ordering::Relaxed);
-    analog_out_6.store(0, Ordering::Relaxed);
+    analog_out_1.set_duty_cycle_percent(0);
+    analog_out_2.set_duty_cycle_percent(0);
+    analog_out_3.set_duty_cycle_percent(100);
+    analog_out_4.set_duty_cycle_percent(50);
+    analog_out_5.set_duty_cycle_percent(25);
+    analog_out_6.set_duty_cycle_percent(0);
     // -- handle inputs / updates
     let mut format_buf = [0u8; 64];
     //let level_text = "Too slow to happen";
@@ -152,8 +152,8 @@ pub async fn inputs_display_task(
         let out1_value: u8 = PWM_VALUE_MAX - (kn1_avg as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
         let out2_value: u8 = PWM_VALUE_MAX - (kn2_avg as u64 * PWM_VALUE_MAX as u64 / 4096) as u8;
         // -- update out1 and out2
-        analog_out_1.store(out1_value, Ordering::Relaxed);
-        analog_out_2.store(out2_value, Ordering::Relaxed);
+        analog_out_1.set_duty_cycle_percent(out1_value);
+        analog_out_2.set_duty_cycle_percent(out2_value);
         // // -- update display
         let do_update = ain_avg != ain_prev
             || kn1_avg != kn1_prev

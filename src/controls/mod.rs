@@ -1,6 +1,9 @@
 use heapless::String;
+
+mod analogout;
 mod debouncer;
 
+pub use analogout::AnalogOutput;
 pub use debouncer::Debouncer;
 
 pub fn half_byte_to_char(half_byte: u8) -> char {
