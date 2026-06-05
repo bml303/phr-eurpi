@@ -46,7 +46,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::{Baseline, Text},
 };
-use heapless::Vec;
+use heapless::String;
 use portable_atomic::{AtomicU8, Ordering};
 use ssd1306::{I2CDisplayInterface, Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use static_cell::StaticCell;
@@ -57,6 +57,7 @@ mod audio;
 mod controls;
 mod io;
 mod tasks;
+mod utils;
 
 use controls::{AnalogOutput, Debouncer};
 use io::{
@@ -65,9 +66,9 @@ use io::{
 };
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
-    I2C_BUS_FREQUENCY_400_KBIT, inputs_display_task, osc_task_consolidated, osc_task_dac,
-    osc_task_generate, pio_task_sm1, pio_task_sm2, pio_task_sm2_irq2, pio_task_sm3, pwm_analog_out,
-    setup_pio_task_sm1, setup_pio_task_sm2, setup_pio_task_sm3,
+    I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task, osc_task_consolidated, osc_task_dac,
+    osc_task_generate, pio_task_sm2, pio_task_sm2_irq2, pio_task_sm3, setup_pio_task_sm2,
+    setup_pio_task_sm3,
 };
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -85,6 +86,8 @@ static EXECUTOR_CORE1: StaticCell<Executor> = StaticCell::new();
 // static ANALOG_OUT_4: AtomicU8 = AtomicU8::new(0);
 // static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
 // static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
+//
+static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<32>, 10> = Channel::new();
 
 bind_interrupts!(
     struct IrqsAdcPioDma {
@@ -185,7 +188,7 @@ fn main() -> ! {
     let mut flash =
         Flash::<_, embassy_rp::flash::Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH11, IrqsAdcPioDma);
     let (board_id, _flash_uid) = io::flash::check_flash(&mut flash);
-    let board_id = controls::u64_to_hexstring(board_id);
+    let board_id = utils::u64_to_hexstring(board_id);
     Text::with_baseline(board_id.as_str(), Point::zero(), text_style, Baseline::Top)
         .draw(&mut display)
         .unwrap();
@@ -196,7 +199,7 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
 
     let adc = Adc::new(p.ADC, IrqsAdcPioDma, AdcConfig::default());
-    let mut dma_ch10 = dma::Channel::new(p.DMA_CH10, IrqsAdcPioDma);
+    //let mut dma_ch10 = dma::Channel::new(p.DMA_CH10, IrqsAdcPioDma);
     let adc_ch_ain = AdcChannel::new_pin(p.PIN_26, Pull::None);
     let adc_ch_kn1 = AdcChannel::new_pin(p.PIN_27, Pull::None);
     let adc_ch_kn2 = AdcChannel::new_pin(p.PIN_28, Pull::None);
@@ -337,9 +340,15 @@ fn main() -> ! {
                 //     &ANALOG_OUT_5,
                 //     &ANALOG_OUT_6,
                 // )));
+                // -- oscillator
                 spawner.spawn(unwrap!(pio_task_sm2_irq2(irq2)));
                 spawner.spawn(unwrap!(pio_task_sm2(sm2, Some(dma_ch2))));
+                // -- digital input
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+                // -- display
+                spawner.spawn(unwrap!(
+                    display_task(display, text_style, &DISPLAY_CHANNEL,)
+                ));
             });
         },
     );
@@ -378,22 +387,21 @@ fn main() -> ! {
     // -- spawn other tasks on core 0
     let executor0 = EXECUTOR_CORE0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner.spawn(unwrap!(inputs_display_task(
+        spawner.spawn(unwrap!(inputs_task(
             adc,
             adc_ch_ain,
             adc_ch_kn1,
             adc_ch_kn2,
-            dma_ch10,
+            //dma_ch10,
             btn1,
             btn2,
-            display,
-            text_style,
             analog_out_1,
             analog_out_2,
             analog_out_3,
             analog_out_4,
             analog_out_5,
             analog_out_6,
+            &DISPLAY_CHANNEL,
         )));
     });
 }

@@ -26,7 +26,7 @@ impl<'a> Debouncer<'a> {
         }
     }
 
-    pub async fn level(&mut self) -> Level {
+    pub fn level(&mut self) -> Level {
         self.input.get_level()
     }
 }

@@ -1,14 +1,16 @@
 use embassy_rp::gpio::Level;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 
-mod analogout;
+// mod analogout;
 mod digitalin;
-mod inputsdisplay;
+mod display;
+mod inputs;
 mod oscillator;
 
-pub use analogout::{pio_task_sm1, pwm_analog_out, setup_pio_task_sm1};
+// pub use analogout::{pio_task_sm1, pwm_analog_out, setup_pio_task_sm1};
 pub use digitalin::{pio_task_sm3, setup_pio_task_sm3};
-pub use inputsdisplay::inputs_display_task;
+pub use display::display_task;
+pub use inputs::inputs_task;
 pub use oscillator::{
     osc_task_consolidated, osc_task_dac, osc_task_generate, pio_task_sm2, pio_task_sm2_irq2,
     setup_pio_task_sm2,
