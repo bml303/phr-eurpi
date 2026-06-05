@@ -18,8 +18,12 @@ use crate::audio::oscillator::sine_oscillator::SineOscillator;
 use crate::io::i2c::mpc4725::*;
 
 use super::{
-    ChannelOscillatorType, SAMPLE_BLOCK_SIZE, SAMPLE_RATE_24KHZ, SAMPLE_RATE_48KHZ,
-    SM2_CLOCK_DIVIDER_1_6_MHZ, SM2_CLOCK_DIVIDER_4_MHZ,
+    ChannelOscillatorType,
+    SAMPLE_BLOCK_SIZE,
+    SAMPLE_RATE_24KHZ,
+    SAMPLE_RATE_48KHZ,
+    //SM2_CLOCK_DIVIDER_1_6_MHZ,
+    SM2_CLOCK_DIVIDER_4_MHZ,
 };
 
 // -- ---------------------------------------------------------------------
@@ -38,29 +42,29 @@ pub fn setup_pio_task_sm2<'d>(
         r"
         .side_set 1                             ; -- SCL is side set
         public entry_point:
-            set pindirs, 1      side 1 [2]      ; -- 00 - SDA output
+            set pindirs, 1      side 1 [3]      ; -- 00 - SDA output
         .wrap_target
-            pull ifempty block  side 1          ; -- 01 - load 32 bits from TX FIFO into OSR, SCL high
-            set pins, 0         side 1 [2]      ; -- 02 - START condition SDA to low, SCL high
-            set x, 7            side 1          ; -- 03 - write 8 bits, SCL high
-            set y, 2            side 0 [2]      ; -- 04 - write 3 bytes, SCL low
+            set pins, 0         side 1 [2]      ; -- 01 - START condition SDA to low, SCL high
+            set x, 7            side 1          ; -- 02 - write 8 bits, SCL high
+            out y, 8            side 0 [1]      ; -- 03 - number of bytes to write from OSR, SCL low
+            jmp y-- bit_loop    side 0          ; -- 04 - jump if y > 0 prior to decrement, SCL low
+            jmp entry_point     side 0          ; -- 05 - restart when zero bytes to write, SCL low
         bit_loop:
-            out pins, 1         side 0          ; -- 05 - read next bit from OSR, SCL low
-            nop                 side 1 [3]      ; -- 06 - confirm SDA value with SCL pulse
-            jmp x-- bit_loop    side 0 [2]      ; -- 07 - jump if x > 0 prior to decrement
-            set pindirs, 0      side 0          ; -- 08 - SDA input
-            set x, 7            side 1 [3]      ; -- 09 - confirm SDA value with SCL pulse
-            jmp pin do_nack     side 0          ; -- 10 - Check ACK from MPC4725
-            set pindirs, 1      side 0          ; -- 11 - SDA output
-            jmp y-- bit_loop    side 0          ; -- 12 - jump if y > 0 prior to decrement
+            out pins, 1         side 0          ; -- 06 - read next bit from OSR, SCL low
+            nop                 side 1 [3]      ; -- 07 - confirm SDA value with SCL pulse
+            jmp x-- bit_loop    side 0 [2]      ; -- 08 - jump if x > 0 prior to decrement
+            set pindirs, 0      side 0          ; -- 09 - SDA input
+            set x, 7            side 1 [3]      ; -- 10 - confirm SDA value with SCL pulse
+            jmp pin do_nack     side 0          ; -- 11 - Check ACK from MPC4725
+            set pindirs, 1      side 0          ; -- 12 - SDA output
+            jmp y-- bit_loop    side 0          ; -- 13 - jump if y > 0 prior to decrement
         do_stop:
-            set pins, 0         side 0 [1]      ; -- 13 - SDA low, SCL low
-            out null, 32        side 0          ; -- 14 - remainder of OSR is invalid
+            set pins, 0         side 0          ; -- 14 - SDA low, SCL low
             set pins, 0         side 1 [3]      ; -- 15 - SDA low, SCL high
-            set pins, 1         side 1 [2]      ; -- 16 - STOP condition SDA to high, SCL high
+            set pins, 1         side 1 [3]      ; -- 16 - STOP condition SDA to high, SCL high
         .wrap
         do_nack:
-            irq nowait 2        side 0 [2]      ; -- 17 - indicate error, SCL high
+            irq nowait 2        side 0 [2]      ; -- 17 - indicate error, SCL low
             jmp entry_point     side 1          ; -- 18 - continue with start condition
         ",
     );
@@ -77,9 +81,10 @@ pub fn setup_pio_task_sm2<'d>(
     cfg.set_out_pins(&[&sda_pin]);
     cfg.set_jmp_pin(&sda_pin);
     //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kHz
-    cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
+    // -- bus speed 1 MHz with 4 PIO clock cycles for I2C each high/low interval
+    cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_4_MHZ);
     cfg.out_sticky = true;
-    cfg.shift_out.auto_fill = false;
+    cfg.shift_out.auto_fill = true;
     cfg.shift_out.direction = ShiftDirection::Left;
     cfg.shift_out.threshold = 32;
     cfg.fifo_join = FifoJoin::TxOnly;
@@ -110,12 +115,15 @@ pub async fn pio_task_sm2(
     //let mut ticker = Ticker::every(Duration::from_nanos(every_nanos));
     sm2.set_enable(true);
     loop {
+        // -- prepare sample
         osc.render(f, &mut out);
         let sample = ((out[0] + 1f32) * 4096f32 / 2f32) as u16;
+        // -- prepare I2C message for MPC4725 I2C PIO: <no of bytes - addr - data byte 1 - data byte 2>
+        let no_of_bytes = 3u32;
         let addr: u32 = 0b11000100;
-        let data_byte_1 = (sample >> 8) as u8;
-        let data_byte_2 = (sample & 0xff) as u8;
-        let data_out = (addr << 24) | ((data_byte_1 as u32) << 16) | ((data_byte_2 as u32) << 8);
+        let data_byte_1 = ((sample >> 8) as u8) as u32;
+        let data_byte_2 = ((sample & 0xff) as u8) as u32;
+        let data_out = (no_of_bytes << 24) | (addr << 16) | (data_byte_1 << 8) | data_byte_2;
         if let Some(dma_ch) = dma_ch.as_mut() {
             sm2.tx().dma_push(dma_ch, &[data_out], false).await;
         } else {
