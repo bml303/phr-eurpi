@@ -63,6 +63,7 @@ use controls::{AnalogOutput, Debouncer};
 use io::{
     display::{SSD1306_I2C_ADDR_DEFAULT, SSD1306_I2C_ADDR_SECONDARY},
     flash::FLASH_SIZE,
+    i2c::i2cpio,
 };
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
@@ -92,8 +93,13 @@ static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<14>, 10> = Chann
 bind_interrupts!(
     struct IrqsAdcPioDma {
         ADC_IRQ_FIFO => AdcInterruptHandler;
+        PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
         PIO1_IRQ_0 => PioInterruptHandler<PIO1>;
-        DMA_IRQ_0 =>  dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH2>, dma::InterruptHandler<DMA_CH10>, dma::InterruptHandler<DMA_CH11>;
+        DMA_IRQ_0 =>  dma::InterruptHandler<DMA_CH0>,
+                        dma::InterruptHandler<DMA_CH1>,
+                        dma::InterruptHandler<DMA_CH2>,
+                        dma::InterruptHandler<DMA_CH10>,
+                        dma::InterruptHandler<DMA_CH11>;
     }
 );
 
@@ -138,29 +144,29 @@ fn main() -> ! {
     // -- Display resources
     // -- ---------------------------------------------------------------------
 
-    // -- i2c bus 0 is used for display
-    let sda_0 = p.PIN_0;
-    let scl_0 = p.PIN_1;
-    info!("Setting up i2c bus 0");
-    let i2c0_config = {
-        let mut i2c_config = I2cConfig::default();
-        i2c_config.frequency = I2C_BUS_FREQUENCY_1_MBIT;
-        i2c_config.scl_pullup = true;
-        i2c_config.sda_pullup = true;
-        i2c_config
-    };
-    let i2c0 = i2c::I2c::new_async(p.I2C0, scl_0, sda_0, IrqsI2c0, i2c0_config);
+    // // -- i2c bus 0 is used for display
+    // let sda_0 = p.PIN_0;
+    // let scl_0 = p.PIN_1;
+    // info!("Setting up i2c bus 0");
+    // let i2c0_config = {
+    //     let mut i2c_config = I2cConfig::default();
+    //     i2c_config.frequency = I2C_BUS_FREQUENCY_1_MBIT;
+    //     i2c_config.scl_pullup = true;
+    //     i2c_config.sda_pullup = true;
+    //     i2c_config
+    // };
+    // let i2c0 = i2c::I2c::new_async(p.I2C0, scl_0, sda_0, IrqsI2c0, i2c0_config);
 
-    // -- display config
-    let interface = I2CDisplayInterface::new(i2c0);
-    let display =
-        Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
-    //display.init().unwrap();
+    // // -- display config
+    // let interface = I2CDisplayInterface::new(i2c0);
+    // let display =
+    //     Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
+    // //display.init().unwrap();
 
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
+    // let text_style = MonoTextStyleBuilder::new()
+    //     .font(&FONT_6X10)
+    //     .text_color(BinaryColor::On)
+    //     .build();
 
     // -- ---------------------------------------------------------------------
     // -- I2C bus for peripherals
@@ -256,19 +262,20 @@ fn main() -> ! {
     info!("Analog outputs ready");
 
     // -- ---------------------------------------------------------------------
-    // -- PIO task(s) for digital input & analog output
+    // -- PIO task(s) for display, digital input & oscillator
     // -- ---------------------------------------------------------------------
 
-    // let Pio {
-    //     mut common,
-    //     irq1,
-    //     irq2,
-    //     irq3,
-    //     mut sm0,
-    //     mut sm1,
-    //     mut sm2,
-    //     ..
-    // } = Pio::new(p.PIO0, IrqsPioSpiAndFlash);
+    let Pio {
+        mut common,
+        irq0,
+        mut sm0,
+        ..
+    } = Pio::new(p.PIO0, IrqsAdcPioDma);
+
+    let sda_pin = p.PIN_0;
+    let scl_pin = p.PIN_1;
+    i2cpio::setup_i2c_pio(&mut common, &mut sm0, sda_pin, scl_pin);
+    let dma_ch0 = dma::Channel::new(p.DMA_CH0, IrqsAdcPioDma);
 
     let Pio {
         mut common,
@@ -314,40 +321,15 @@ fn main() -> ! {
         move || {
             let executor1 = EXECUTOR_CORE1.init(Executor::new());
             executor1.run(|spawner| {
-                // spawner.spawn(unwrap!(pio_task_sm1(
-                //     sm1,
-                //     Some(dma_ch1),
-                //     &ANALOG_OUT_1,
-                //     &ANALOG_OUT_2,
-                //     &ANALOG_OUT_3,
-                //     &ANALOG_OUT_4,
-                //     &ANALOG_OUT_5,
-                //     &ANALOG_OUT_6,
-                // )));
-                // spawner.spawn(unwrap!(pwm_analog_out(
-                //     p.PWM_SLICE0,
-                //     p.PWM_SLICE1,
-                //     p.PWM_SLICE2,
-                //     p.PIN_21,
-                //     p.PIN_20,
-                //     p.PIN_16,
-                //     p.PIN_17,
-                //     p.PIN_18,
-                //     p.PIN_19,
-                //     &ANALOG_OUT_1,
-                //     &ANALOG_OUT_2,
-                //     &ANALOG_OUT_3,
-                //     &ANALOG_OUT_4,
-                //     &ANALOG_OUT_5,
-                //     &ANALOG_OUT_6,
-                // )));
                 // -- oscillator
                 spawner.spawn(unwrap!(pio_task_sm2_irq2(irq2)));
                 spawner.spawn(unwrap!(pio_task_sm2(sm2, Some(dma_ch2))));
                 // -- digital input
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
                 // -- display
-                spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
+                spawner.spawn(unwrap!(i2cpio::pio_task_sm0_irq0(irq0)));
+                spawner.spawn(unwrap!(display_task(sm0, dma_ch0, &DISPLAY_CHANNEL)));
+                //spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
             });
         },
     );

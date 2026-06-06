@@ -86,7 +86,7 @@ pub fn setup_pio_task_sm2<'d>(
     cfg.out_sticky = true;
     cfg.shift_out.auto_fill = true;
     cfg.shift_out.direction = ShiftDirection::Left;
-    cfg.shift_out.threshold = 32;
+    cfg.shift_out.threshold = 8;
     cfg.fifo_join = FifoJoin::TxOnly;
     sm2.set_config(&cfg);
     sm2.set_pin_dirs(PioPinDirection::Out, &[&sda_pin, &scl_pin]);
@@ -119,16 +119,29 @@ pub async fn pio_task_sm2(
         osc.render(f, &mut out);
         let sample = ((out[0] + 1f32) * 4096f32 / 2f32) as u16;
         // -- prepare I2C message for MPC4725 I2C PIO: <no of bytes - addr - data byte 1 - data byte 2>
-        let no_of_bytes = 3u32;
-        let addr: u32 = 0b11000100;
-        let data_byte_1 = ((sample >> 8) as u8) as u32;
-        let data_byte_2 = ((sample & 0xff) as u8) as u32;
-        let data_out = (no_of_bytes << 24) | (addr << 16) | (data_byte_1 << 8) | data_byte_2;
+        let no_of_bytes = 3u8;
+        let dev_addr_write: u8 = 0b11000100;
+        let data_byte_1 = (sample >> 8) as u8;
+        let data_byte_2 = (sample & 0xff) as u8;
         if let Some(dma_ch) = dma_ch.as_mut() {
-            sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+            let data_out = [no_of_bytes, dev_addr_write, data_byte_1, data_byte_2];
+            sm2.tx().dma_push(dma_ch, &data_out, false).await;
         } else {
-            sm2.tx().wait_push(data_out).await;
+            sm2.tx().wait_push(no_of_bytes as u32).await;
+            sm2.tx().wait_push(dev_addr_write as u32).await;
+            sm2.tx().wait_push(data_byte_1 as u32).await;
+            sm2.tx().wait_push(data_byte_2 as u32).await;
         }
+        // let no_of_bytes = 3u32;
+        // let addr: u32 = 0b11000100;
+        // let data_byte_1 = ((sample >> 8) as u8) as u32;
+        // let data_byte_2 = ((sample & 0xff) as u8) as u32;
+        // let data_out = (no_of_bytes << 24) | (addr << 16) | (data_byte_1 << 8) | data_byte_2;
+        // if let Some(dma_ch) = dma_ch.as_mut() {
+        //     sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+        // } else {
+        //     sm2.tx().wait_push(data_out).await;
+        // }
         yield_now().await;
         Timer::after(Duration::from_micros(1)).await;
     }
