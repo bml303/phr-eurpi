@@ -131,7 +131,7 @@ pub async fn i2c_write_byte_and_data<'d, const LEN: usize>(
     data: [u8; LEN],
 ) {
     // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-    let no_of_bytes = (LEN + 1) as u8;
+    let no_of_bytes = (LEN + 2) as u8;
     let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
     let header = [no_of_bytes, dev_addr_write, byte];
     sm.tx().dma_push(dma_ch, &header, false).await;

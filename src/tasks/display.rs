@@ -45,25 +45,20 @@ pub async fn display_task(
         .render(&mut sm, &mut dma_ch, display_buf, &frame_area)
         .await;
     // -- intro sequence: flash the screen 3 times
-    //for i in 0..3 {
     let delay_dur = Duration::from_millis(500);
-    ssd1306
-        .send_cmd(&mut sm, &mut dma_ch, SSD1306_SET_ALL_ON)
-        .await; // Set all pixels on
+
+    ssd1306.set_entire_on_all(&mut sm, &mut dma_ch).await; // -- set all pixels on
     yield_now().await;
     Timer::after(delay_dur).await;
-    loop {
-        ssd1306
-            .send_cmd(&mut sm, &mut dma_ch, SSD1306_SET_DISP_OFF)
-            .await; // go back to following RAM for pixel state
+    for _i in 0..3 {
+        ssd1306.set_display_off(&mut sm, &mut dma_ch).await; // -- switch display off
         yield_now().await;
         Timer::after(delay_dur).await;
-        ssd1306
-            .send_cmd(&mut sm, &mut dma_ch, SSD1306_SET_DISP_ON)
-            .await; // go back to following RAM for pixel state
+        ssd1306.set_display_on(&mut sm, &mut dma_ch).await; // -- go back to following RAM for pixel state
         yield_now().await;
         Timer::after(delay_dur).await;
     }
+
     // let _ = display.init();
     // let _ = display.clear();
     loop {

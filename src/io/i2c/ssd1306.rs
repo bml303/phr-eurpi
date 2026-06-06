@@ -1,4 +1,4 @@
-use core::cmp::min;
+use core::cmp::{max, min};
 
 use embassy_rp::{
     Peri,
@@ -38,7 +38,8 @@ const SSD1306_SET_MEM_MODE: u8 = 0x20;
 const SSD1306_SET_COL_ADDR: u8 = 0x21;
 const SSD1306_SET_PAGE_ADDR: u8 = 0x22;
 const SSD1306_SET_HORIZ_SCROLL: u8 = 0x26;
-const SSD1306_SET_SCROLL: u8 = 0x2E;
+const SSD1306_SET_SCROLL_DISABLE: u8 = 0x2E;
+const SSD1306_SET_SCROLL_ENABLE: u8 = 0x2F;
 
 const SSD1306_SET_DISP_START_LINE: u8 = 0x40;
 
@@ -46,15 +47,15 @@ const SSD1306_SET_CONTRAST: u8 = 0x81;
 const SSD1306_SET_CHARGE_PUMP: u8 = 0x8D;
 
 const SSD1306_SET_SEG_REMAP: u8 = 0xA0;
-pub const SSD1306_SET_ENTIRE_ON: u8 = 0xA4;
-pub const SSD1306_SET_ALL_ON: u8 = 0xA5;
-const SSD1306_SET_NORM_DISP: u8 = 0xA6;
-pub const SSD1306_SET_INV_DISP: u8 = 0xA7;
+pub const SSD1306_SET_ENTIRE_ON_RAM: u8 = 0xA4;
+pub const SSD1306_SET_ENTIRE_ON_ALL: u8 = 0xA5;
+const SSD1306_SET_DISP_NORM: u8 = 0xA6;
+pub const SSD1306_SET_DISP_INV: u8 = 0xA7;
 const SSD1306_SET_MUX_RATIO: u8 = 0xA8;
-pub const SSD1306_SET_DISP_ON: u8 = 0xAE;
-pub const SSD1306_SET_DISP_OFF: u8 = 0xAF;
-const SSD1306_SET_COM_OUT_DIR: u8 = 0xC0;
-const SSD1306_SET_COM_OUT_DIR_FLIP: u8 = 0xC0;
+pub const SSD1306_SET_DISP_OFF: u8 = 0xAE;
+pub const SSD1306_SET_DISP_ON: u8 = 0xAF;
+const SSD1306_SET_COM_OUT_SCAN_DIR_NORMAL: u8 = 0xC0;
+const SSD1306_SET_COM_OUT_SCAN_DIR_REMAPPED: u8 = 0xC8;
 
 const SSD1306_SET_DISP_OFFSET: u8 = 0xD3;
 const SSD1306_SET_DISP_CLK_DIV: u8 = 0xD5;
@@ -68,6 +69,29 @@ pub const SSD1306_BUF_LEN: usize = SSD1306_NUM_PAGES as usize * SSD1306_WIDTH as
 
 const SSD1306_WRITE_MODE: u8 = 0xFE;
 const SSD1306_READ_MODE: u8 = 0xFF;
+
+const COM_PIN_CFG_SEQ_NO_LR_REMAP: u8 = 0x02;
+const COM_PIN_CFG_ALT_NO_LR_REMAP: u8 = 0x12;
+const COM_PIN_CFG_SEQ_WITH_LR_REMAP: u8 = 0x22;
+const COM_PIN_CFG_ALT_WITH_LR_REMAP: u8 = 0x32;
+const CHARGE_PUMP_DISABLE: u8 = 0x04;
+const CHARGE_PUMP_ENABLE: u8 = 0x14;
+const CONTRAST_DEFAULT: u8 = 0x7f;
+const DISPLAY_OFFSET_MAX: u8 = 0x3f;
+const DIVIDE_RATIO_DEFAULT: u8 = 0x00;
+const OSCILLATOR_FREQUENCY_DEFAULT: u8 = 0x08;
+const MEMORY_ADDRESS_MODE_HORIZONTAL: u8 = 0;
+const MEMORY_ADDRESS_MODE_VERTICAL: u8 = 1;
+const MEMORY_ADDRESS_MODE_PAGE: u8 = 2;
+const MUX_RATIO_MIN: u8 = 15;
+const MUX_RATIO_MAX: u8 = 63;
+const PHASE1_DEFAULT: u8 = 0x02;
+const PHASE2_DEFAULT: u8 = 0x02;
+const START_LINE_MAX: u8 = 64;
+const VCOMH_LEVEL_V065: u8 = 0x00;
+const VCOMH_LEVEL_V077: u8 = 0x20;
+const VCOMH_LEVEL_V083: u8 = 0x30;
+const VCOMH_LEVEL_AUTO: u8 = 0x40;
 
 const ASCII_A: u8 = 65;
 const ASCII_Z: u8 = 90;
@@ -115,6 +139,19 @@ static FONT: [u8; 296] = [
     0x36, 0x49, 0x49, 0x49, 0x49, 0x49, 0x36, 0x00, //8
     0x06, 0x09, 0x09, 0x09, 0x09, 0x09, 0x7f, 0x00, //9
 ];
+
+pub enum SSD1306MemoryAddressMode {
+    Horizontal,
+    Vertical,
+    Page,
+}
+
+pub enum SSD1306VcomhDeselectLevel {
+    V065,
+    V077,
+    V083,
+    Auto,
+}
 
 pub struct SSD1306RenderArea {
     start_col: u8,
@@ -164,27 +201,17 @@ impl SSD1306 {
         Self { dev_addr }
     }
 
-    pub async fn send_cmd<'d>(
+    pub async fn send_cmd<'d, const LEN: usize>(
         &self,
         sm: &mut StateMachine<'static, PIO0, 0>,
         dma_ch: &mut DmaChannel<'static>,
-        cmd: u8,
+        cmd: [u8; LEN],
     ) {
         // I2C write process expects a control byte followed by data
         // this "data" can be a command or data to follow up a command
         // Co = 1, D/C = 0 => the driver expects a command
-        i2c_write_two_bytes(sm, dma_ch, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
-    }
-
-    pub async fn send_cmd_list<'d, const LEN: usize>(
-        &self,
-        sm: &mut StateMachine<'static, PIO0, 0>,
-        dma_ch: &mut DmaChannel<'static>,
-        cmd_list: [u8; LEN],
-    ) {
-        for i in 0..cmd_list.len() {
-            self.send_cmd(sm, dma_ch, cmd_list[i]).await;
-        }
+        //i2c_write_two_bytes(sm, dma_ch, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
+        i2c_write_byte_and_data(sm, dma_ch, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
     }
 
     pub async fn send_data<'d, const LEN: usize>(
@@ -199,6 +226,266 @@ impl SSD1306 {
         i2c_write_byte_and_data(sm, dma_ch, self.dev_addr, SSD1306_CONTROL_DATA, data).await;
     }
 
+    pub async fn set_contrast<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        contrast: u8,
+    ) {
+        // -- 256 contrast steps, 0x7f RESET
+        let cmd = [SSD1306_SET_CONTRAST, contrast];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_entire_on_ram<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_ENTIRE_ON_RAM];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_entire_on_all<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_ENTIRE_ON_ALL];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_normal<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_DISP_NORM];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_inverted<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_DISP_INV];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_off<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_DISP_OFF];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_on<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_DISP_ON];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    // pub async fn set_continuous_horizontal_scroll<'d>(
+    //     &self,
+    //     sm: &mut StateMachine<'static, PIO0, 0>,
+    //     dma_ch: &mut DmaChannel<'static>,
+    // ) {
+    //     let cmd = [SSD1306_SET_DISP_ON];
+    //     self.send_cmd(sm, dma_ch, cmd).await;
+    // }
+
+    pub async fn cmd_set_mem_mode<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        mode: SSD1306MemoryAddressMode,
+    ) {
+        // set memory address mode 0 = horizontal, 1 = vertical, 2 = page
+        let mode = match mode {
+            SSD1306MemoryAddressMode::Horizontal => MEMORY_ADDRESS_MODE_HORIZONTAL,
+            SSD1306MemoryAddressMode::Vertical => MEMORY_ADDRESS_MODE_VERTICAL,
+            SSD1306MemoryAddressMode::Page => MEMORY_ADDRESS_MODE_PAGE,
+        };
+        let cmd = [SSD1306_SET_MEM_MODE, mode];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_start_line<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        start_line: u8,
+    ) {
+        let start_line = min(start_line, START_LINE_MAX);
+        let cmd = [SSD1306_SET_DISP_START_LINE | start_line];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_segment_remap<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        remap: bool,
+    ) {
+        let remap = if remap { 1 } else { 0 };
+        let cmd = [SSD1306_SET_SEG_REMAP | remap];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_mux_ratio<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        ratio: u8,
+    ) {
+        let ratio = if ratio < MUX_RATIO_MIN {
+            MUX_RATIO_MIN
+        } else if ratio > MUX_RATIO_MAX {
+            MUX_RATIO_MIN
+        } else {
+            ratio
+        };
+        let cmd = [SSD1306_SET_MUX_RATIO, ratio];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_com_out_scan_dir<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        remap: bool,
+    ) {
+        let cmd = if remap {
+            [SSD1306_SET_COM_OUT_SCAN_DIR_REMAPPED]
+        } else {
+            [SSD1306_SET_COM_OUT_SCAN_DIR_NORMAL]
+        };
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_display_offset<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        offset: u8,
+    ) {
+        let offset = min(offset, DISPLAY_OFFSET_MAX);
+        let cmd = [SSD1306_SET_DISP_OFFSET, offset];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_com_pin_cfg<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        alternative_com_pin: bool,
+        com_left_right_remap: bool,
+    ) {
+        let pin_cfg = if alternative_com_pin {
+            if com_left_right_remap {
+                COM_PIN_CFG_ALT_WITH_LR_REMAP
+            } else {
+                COM_PIN_CFG_ALT_NO_LR_REMAP
+            }
+        } else {
+            if com_left_right_remap {
+                COM_PIN_CFG_SEQ_WITH_LR_REMAP
+            } else {
+                COM_PIN_CFG_SEQ_NO_LR_REMAP
+            }
+        };
+        let cmd = [SSD1306_SET_COM_PIN_CFG, pin_cfg];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_disp_clk_div<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        divide_ratio: u8,
+        oscillator_frequency: u8,
+    ) {
+        let value = ((oscillator_frequency & 0xf) << 4) | (divide_ratio & 0xf);
+        let cmd = [SSD1306_SET_DISP_CLK_DIV, value];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_precharge<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        phase1: u8,
+        phase2: u8,
+    ) {
+        let phase1 = max(1, phase1 & 0xf);
+        let phase2 = max(1, phase2 & 0xf);
+        let value = (phase2 << 4) | (phase1 & 0xf);
+        let cmd = [SSD1306_SET_PRECHARGE, value];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn set_vcomh_deselect_level<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+        level: SSD1306VcomhDeselectLevel,
+    ) {
+        let level = match level {
+            SSD1306VcomhDeselectLevel::V065 => VCOMH_LEVEL_V065,
+            SSD1306VcomhDeselectLevel::V077 => VCOMH_LEVEL_V077,
+            SSD1306VcomhDeselectLevel::V083 => VCOMH_LEVEL_V083,
+            SSD1306VcomhDeselectLevel::Auto => VCOMH_LEVEL_AUTO,
+        };
+        let cmd = [SSD1306_SET_VCOM_DESEL, level];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn disable_charge_pump<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [
+            SSD1306_SET_CHARGE_PUMP,
+            CHARGE_PUMP_DISABLE,
+            SSD1306_SET_DISP_ON,
+        ];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn enable_charge_pump<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_CHARGE_PUMP, CHARGE_PUMP_ENABLE];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn disable_horizontal_scrolling<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_SCROLL_DISABLE, 0];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
+    pub async fn enable_horizontal_scrolling<'d>(
+        &self,
+        sm: &mut StateMachine<'static, PIO0, 0>,
+        dma_ch: &mut DmaChannel<'static>,
+    ) {
+        let cmd = [SSD1306_SET_SCROLL_ENABLE, 0];
+        self.send_cmd(sm, dma_ch, cmd).await;
+    }
+
     pub async fn init<'d>(
         &self,
         sm: &mut StateMachine<'static, PIO0, 0>,
@@ -209,42 +496,31 @@ impl SSD1306 {
         // to demonstrate what the initialization sequence looks like
         // Some configuration values are recommended by the board manufacturer
 
-        let cmd_list: [u8; 26] = [
-            SSD1306_SET_DISP_OFF, // set display off
-            /* memory mapping */
-            SSD1306_SET_MEM_MODE, // set memory address mode 0 = horizontal, 1 = vertical, 2 = page
-            0x00,                 // horizontal addressing mode
-            /* resolution and layout */
-            SSD1306_SET_DISP_START_LINE,    // set display start line to 0
-            SSD1306_SET_SEG_REMAP | 0x01, // set segment re-map, column address 127 is mapped to SEG0
-            SSD1306_SET_MUX_RATIO,        // set multiplex ratio
-            SSD1306_HEIGHT - 1,           // Display height - 1
-            SSD1306_SET_COM_OUT_DIR | 0x08, // set COM (common) output scan direction. Scan from bottom up, COM[N-1] to COM0
-            SSD1306_SET_DISP_OFFSET,        // set display offset
-            0x00,                           // no offset
-            SSD1306_SET_COM_PIN_CFG, // set COM (common) pins hardware configuration. Board specific magic number.
-            // 0x02 Works for 128x32, 0x12 Possibly works for 128x64. Other options 0x22, 0x32
-            //#if
-            0x02, // -- ((SSD1306_WIDTH == 128) && (SSD1306_HEIGHT == 32))
-            // 0x12, // -- ((SSD1306_WIDTH == 128) && (SSD1306_HEIGHT == 64))
-            /* timing and driving scheme */
-            SSD1306_SET_DISP_CLK_DIV, // set display clock divide ratio
-            0x80,                     // div ratio of 1, standard freq
-            SSD1306_SET_PRECHARGE,    // set pre-charge period
-            0xF1,                     // Vcc internally generated on our board
-            SSD1306_SET_VCOM_DESEL,   // set VCOMH deselect level
-            0x30,                     // 0.83xVcc
-            /* display */
-            SSD1306_SET_CONTRAST, // set contrast control
-            0xFF,
-            SSD1306_SET_ENTIRE_ON, // set entire display on to follow RAM content
-            SSD1306_SET_NORM_DISP, // set normal (not inverted) display
-            SSD1306_SET_CHARGE_PUMP, // set charge pump
-            0x14,                  // Vcc internally generated on our board
-            SSD1306_SET_SCROLL | 0x00, // deactivate horizontal scrolling if set. This is necessary as memory writes will corrupt if scrolling was enabled
-            SSD1306_SET_DISP_ON,       // turn display on
-        ];
-        self.send_cmd_list(sm, dma_ch, cmd_list).await;
+        self.set_display_off(sm, dma_ch).await;
+        self.cmd_set_mem_mode(sm, dma_ch, SSD1306MemoryAddressMode::Horizontal)
+            .await;
+        self.set_display_start_line(sm, dma_ch, 0).await;
+        self.set_segment_remap(sm, dma_ch, true).await; // set segment re-map, column address 127 is mapped to SEG0
+        self.set_mux_ratio(sm, dma_ch, SSD1306_HEIGHT - 1).await;
+        self.set_com_out_scan_dir(sm, dma_ch, true).await;
+        self.set_display_offset(sm, dma_ch, 0).await;
+        self.set_com_pin_cfg(sm, dma_ch, false, false).await;
+        self.set_disp_clk_div(
+            sm,
+            dma_ch,
+            DIVIDE_RATIO_DEFAULT,
+            OSCILLATOR_FREQUENCY_DEFAULT,
+        )
+        .await; // -- divide ratio = 1, standard oscillator frequency
+        self.set_precharge(sm, dma_ch, 2, 2).await;
+        self.set_vcomh_deselect_level(sm, dma_ch, SSD1306VcomhDeselectLevel::Auto)
+            .await;
+        self.set_contrast(sm, dma_ch, CONTRAST_DEFAULT).await;
+        self.disable_charge_pump(sm, dma_ch).await;
+        self.set_display_normal(sm, dma_ch).await;
+        self.disable_horizontal_scrolling(sm, dma_ch).await;
+        self.set_entire_on_ram(sm, dma_ch).await;
+        self.set_display_on(sm, dma_ch).await;
     }
 
     pub async fn render<'d, const LEN: usize>(
@@ -263,7 +539,7 @@ impl SSD1306 {
             area.start_page,
             area.end_page,
         ];
-        self.send_cmd_list(sm, dma_ch, cmd_list).await;
+        self.send_cmd(sm, dma_ch, cmd_list).await;
         self.send_data(sm, dma_ch, data).await;
     }
 
