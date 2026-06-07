@@ -214,7 +214,7 @@ impl<'d> SSD1306<'d> {
         // -- Co = 1, D/C = 0 => the driver expects a command
         //i2c_write_two_bytes(, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
         self.i2cpio
-            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_COMMAND, cmd)
+            .i2c_write_byte_and_data_v2(self.dev_addr, SSD1306_CONTROL_COMMAND, cmd)
             .await;
     }
 
@@ -223,7 +223,7 @@ impl<'d> SSD1306<'d> {
         // -- and then wraps around to the next page, so we can send the entire frame
         // -- buffer in one gooooooo!
         self.i2cpio
-            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
+            .i2c_write_byte_and_data_v2(self.dev_addr, SSD1306_CONTROL_DATA, data)
             .await;
     }
 

@@ -11,6 +11,7 @@ use embassy_rp::{
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
+use heapless::vec::Vec;
 
 // -- bus speed 400 kHz with 4 PIO clock cycles for I2C each high/low interval
 // pub const SM_CLOCK_DIVIDER_1_6_MHZ: u32 = 1_600_000;
@@ -18,17 +19,22 @@ use embassy_rp::{
 pub const SM_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
 
 // -- ---------------------------------------------------------------------
-// -- SM2 - MPC4725 i2c DAC output
+// -- SM0 - i2c PIO
 // -- ---------------------------------------------------------------------
 
 pub struct I2CPIO<'d> {
     sm0: StateMachine<'d, PIO0, 0>,
     dma_ch: Option<DmaChannel<'d>>,
+    data_buf: [u32; 600],
 }
 
 impl<'d> I2CPIO<'d> {
     pub fn new(sm0: StateMachine<'d, PIO0, 0>, dma_ch: Option<DmaChannel<'d>>) -> Self {
-        I2CPIO { sm0, dma_ch }
+        I2CPIO {
+            sm0,
+            dma_ch,
+            data_buf: [0; 600],
+        }
     }
 
     pub fn setup_i2c_pio(
@@ -103,7 +109,40 @@ impl<'d> I2CPIO<'d> {
         self.sm0.set_enable(true);
     }
 
-    pub async fn i2c_write_byte_and_data<const LEN: usize>(
+    pub async fn i2c_write_byte_and_data_v2<const LEN: usize>(
+        &mut self,
+        dev_addr: u8,
+        cmd_byte: u8,
+        data: [u8; LEN],
+    ) {
+        // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
+        let no_of_bytes = (LEN + 2) as u32;
+        defmt::debug!("no_of_bytes is {}", no_of_bytes);
+        let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
+        //let header = [dev_addr_write, byte];
+        if let Some(dma_ch) = self.dma_ch.as_mut() {
+            self.data_buf[0] = no_of_bytes;
+            self.data_buf[1] = (dev_addr_write as u32) << 24;
+            self.data_buf[2] = (cmd_byte as u32) << 24;
+            for i in 0..data.len() {
+                self.data_buf[i + 3] = (data[i] as u32) << 24;
+            }
+            #[allow(static_mut_refs)]
+            self.sm0
+                .tx()
+                .dma_push(dma_ch, &self.data_buf[..(no_of_bytes + 1) as usize], false)
+                .await;
+        } else {
+            self.sm0.tx().wait_push(no_of_bytes).await;
+            self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
+            self.sm0.tx().wait_push((cmd_byte as u32) << 24).await;
+            for i in 0..data.len() {
+                self.sm0.tx().wait_push((data[i] as u32) << 24).await;
+            }
+        }
+    }
+
+    pub async fn i2c_write_byte_and_data_v1<const LEN: usize>(
         &mut self,
         dev_addr: u8,
         byte: u8,

@@ -329,7 +329,7 @@ fn main() -> ! {
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
                 // -- display
                 spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
-                spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+                //spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
                 //spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
             });
         },
@@ -385,5 +385,6 @@ fn main() -> ! {
             analog_out_6,
             &DISPLAY_CHANNEL,
         )));
+        spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
     });
 }
