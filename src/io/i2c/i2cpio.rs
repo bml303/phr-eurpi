@@ -55,28 +55,26 @@ impl<'d> I2CPIO<'d> {
                 set pins, 0         side 1 [1]      ; -- 02 - START condition SDA to low, SCL high
                 set x, 7            side 1          ; -- 03 - write 8 bits, SCL high
                 out y, 32           side 1          ; -- 04 - number of bytes to write from OSR, SCL low
-                jmp y-- byte_loop   side 0 [1]      ; -- 05 - jump if y > 0 prior to decrement, SCL low
+                jmp y-- byte_loop   side 0 [2]      ; -- 05 - jump if y > 0 prior to decrement, SCL low
                 jmp entry_point     side 0          ; -- 06 - restart when zero bytes to write, SCL low
             byte_loop:
-                pull block          side 0          ; -- 07 - load next byte to write from TX FIFO, SCL low
             bit_loop:
-                out pins, 1         side 0          ; -- 08 - read next bit from OSR, SCL low
-                nop                 side 1 [3]      ; -- 09 - confirm SDA value with SCL pulse
-                jmp x-- bit_loop    side 0 [2]      ; -- 10 - jump if x > 0 prior to decrement
-                set pindirs, 0      side 0          ; -- 11 - SDA input
-                set x, 7            side 1 [2]      ; -- 12 - confirm SDA value with SCL pulse
-                jmp pin do_nack     side 1          ; -- 13 - Check ACK
-                set pindirs, 1      side 0          ; -- 14 - SDA output
-                jmp y-- byte_loop   side 0          ; -- 15 - jump if y > 0 prior to decrement
+                out pins, 1         side 0          ; -- 07 - read next bit from OSR, SCL low
+                nop                 side 1 [3]      ; -- 08 - confirm SDA value with SCL pulse
+                jmp x-- bit_loop    side 0 [2]      ; -- 09 - jump if x > 0 prior to decrement
+                set pindirs, 0      side 0          ; -- 10 - SDA input
+                set x, 7            side 1 [3]      ; -- 11 - confirm SDA value with SCL pulse
+                jmp pin do_nack     side 0          ; -- 12 - Check ACK
+                set pindirs, 1      side 0          ; -- 13 - SDA output
+                jmp y-- byte_loop   side 0          ; -- 14 - jump if y > 0 prior to decrement
             do_stop:
-                set pins, 0         side 0          ; -- 16 - SDA low, SCL low
-                set pins, 0         side 1 [2]      ; -- 17 - SDA low, SCL high
-                ;out null, 32        side 1          ; -- 18 - explicitly discard the OSR contents
-                set pins, 1         side 1 [3]      ; -- 19 - STOP condition SDA to high, SCL high
+                set pins, 0         side 0          ; -- 15 - SDA low, SCL low
+                set pins, 0         side 1 [3]      ; -- 16 - SDA low, SCL high
+                set pins, 1         side 1 [3]      ; -- 17 - STOP condition SDA to high, SCL high
             .wrap
             do_nack:
-                irq nowait 0        side 0 [2]      ; -- 20 - indicate error, SCL low
-                jmp entry_point     side 1          ; -- 21 - continue with start condition
+                irq nowait 0        side 0 [2]      ; -- 18 - indicate error, SCL low
+                jmp entry_point     side 1          ; -- 19 - continue with start condition
             ",
         );
         // -- setup state machine
@@ -94,7 +92,7 @@ impl<'d> I2CPIO<'d> {
         //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kH
         cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
         cfg.out_sticky = true;
-        cfg.shift_out.auto_fill = false;
+        cfg.shift_out.auto_fill = true;
         cfg.shift_out.direction = ShiftDirection::Left;
         cfg.shift_out.threshold = 32;
         cfg.fifo_join = FifoJoin::TxOnly;
@@ -122,23 +120,40 @@ impl<'d> I2CPIO<'d> {
         //let header = [dev_addr_write, byte];
         if let Some(dma_ch) = self.dma_ch.as_mut() {
             self.data_buf[0] = no_of_bytes;
-            self.data_buf[1] = (dev_addr_write as u32) << 24;
-            self.data_buf[2] = (cmd_byte as u32) << 24;
-            for i in 0..data.len() {
-                self.data_buf[i + 3] = (data[i] as u32) << 24;
+            self.data_buf[1] = ((dev_addr_write as u32) << 24) | ((cmd_byte as u32) << 16);
+            if data.len() >= 1 {
+                self.data_buf[1] |= (data[0] as u32) << 8;
             }
-            #[allow(static_mut_refs)]
+            if data.len() >= 2 {
+                self.data_buf[1] |= data[1] as u32;
+            }
+            let mut j = 2;
+            if data.len() >= 3 {
+                for i in (2..data.len()).step_by(4) {
+                    self.data_buf[j] = (data[i] as u32) << 24;
+                    if i + 1 < data.len() {
+                        self.data_buf[j] |= (data[i + 1] as u32) << 16;
+                    }
+                    if i + 2 < data.len() {
+                        self.data_buf[j] |= (data[i + 2] as u32) << 8;
+                    }
+                    if i + 3 < data.len() {
+                        self.data_buf[j] |= data[i + 3] as u32;
+                    }
+                    j += 1;
+                }
+            }
             self.sm0
                 .tx()
-                .dma_push(dma_ch, &self.data_buf[..(no_of_bytes + 1) as usize], false)
+                .dma_push(dma_ch, &self.data_buf[..j], false)
                 .await;
         } else {
-            self.sm0.tx().wait_push(no_of_bytes).await;
-            self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
-            self.sm0.tx().wait_push((cmd_byte as u32) << 24).await;
-            for i in 0..data.len() {
-                self.sm0.tx().wait_push((data[i] as u32) << 24).await;
-            }
+            // self.sm0.tx().wait_push(no_of_bytes).await;
+            // self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
+            // self.sm0.tx().wait_push((cmd_byte as u32) << 24).await;
+            // for i in 0..data.len() {
+            //     self.sm0.tx().wait_push((data[i] as u32) << 24).await;
+            // }
         }
     }
 
