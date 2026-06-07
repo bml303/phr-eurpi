@@ -1,3 +1,4 @@
+use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
     dma::Channel as DmaChannel,
@@ -115,45 +116,44 @@ impl<'d> I2CPIO<'d> {
     ) {
         // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
         let no_of_bytes = (LEN + 2) as u32;
-        defmt::debug!("no_of_bytes is {}", no_of_bytes);
+        //defmt::debug!("no_of_bytes is {}", no_of_bytes);
         let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
         //let header = [dev_addr_write, byte];
-        if let Some(dma_ch) = self.dma_ch.as_mut() {
-            self.data_buf[0] = no_of_bytes;
-            self.data_buf[1] = ((dev_addr_write as u32) << 24) | ((cmd_byte as u32) << 16);
-            if data.len() >= 1 {
-                self.data_buf[1] |= (data[0] as u32) << 8;
-            }
-            if data.len() >= 2 {
-                self.data_buf[1] |= data[1] as u32;
-            }
-            let mut j = 2;
-            if data.len() >= 3 {
-                for i in (2..data.len()).step_by(4) {
-                    self.data_buf[j] = (data[i] as u32) << 24;
-                    if i + 1 < data.len() {
-                        self.data_buf[j] |= (data[i + 1] as u32) << 16;
-                    }
-                    if i + 2 < data.len() {
-                        self.data_buf[j] |= (data[i + 2] as u32) << 8;
-                    }
-                    if i + 3 < data.len() {
-                        self.data_buf[j] |= data[i + 3] as u32;
-                    }
-                    j += 1;
+        self.data_buf[0] = no_of_bytes;
+        self.data_buf[1] = ((dev_addr_write as u32) << 24) | ((cmd_byte as u32) << 16);
+        if data.len() >= 1 {
+            self.data_buf[1] |= (data[0] as u32) << 8;
+        }
+        if data.len() >= 2 {
+            self.data_buf[1] |= data[1] as u32;
+        }
+        yield_now().await;
+        let mut j = 2;
+        if data.len() >= 3 {
+            for i in (2..data.len()).step_by(4) {
+                self.data_buf[j] = (data[i] as u32) << 24;
+                if i + 1 < data.len() {
+                    self.data_buf[j] |= (data[i + 1] as u32) << 16;
                 }
+                if i + 2 < data.len() {
+                    self.data_buf[j] |= (data[i + 2] as u32) << 8;
+                }
+                if i + 3 < data.len() {
+                    self.data_buf[j] |= data[i + 3] as u32;
+                }
+                j += 1;
+                yield_now().await;
             }
+        }
+        if let Some(dma_ch) = self.dma_ch.as_mut() {
             self.sm0
                 .tx()
                 .dma_push(dma_ch, &self.data_buf[..j], false)
                 .await;
         } else {
-            // self.sm0.tx().wait_push(no_of_bytes).await;
-            // self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
-            // self.sm0.tx().wait_push((cmd_byte as u32) << 24).await;
-            // for i in 0..data.len() {
-            //     self.sm0.tx().wait_push((data[i] as u32) << 24).await;
-            // }
+            for i in 0..j {
+                self.sm0.tx().wait_push(self.data_buf[i]).await;
+            }
         }
     }
 

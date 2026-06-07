@@ -275,7 +275,7 @@ fn main() -> ! {
     let scl_pin = p.PIN_1;
     let dma_ch0 = dma::Channel::new(p.DMA_CH0, IrqsAdcPioDma);
     let mut i2cpio = I2CPIO::new(sm0, Some(dma_ch0));
-    // let mut i2cpio = I2CPIO::new(sm0, None);
+    //let mut i2cpio = I2CPIO::new(sm0, None);
     i2cpio.setup_i2c_pio(&mut common, sda_pin, scl_pin);
 
     let Pio {

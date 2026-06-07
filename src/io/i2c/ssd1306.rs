@@ -437,10 +437,6 @@ impl<'d> SSD1306<'d> {
     }
 
     pub async fn init(&mut self) {
-        // Some of these commands are not strictly necessary as the reset
-        // process defaults to some of these but they are shown here
-        // to demonstrate what the initialization sequence looks like
-        // Some configuration values are recommended by the board manufacturer
         self.i2cpio.enable();
         defmt::debug!("SSD1306 init 1");
         self.set_mux_ratio(SSD1306_HEIGHT - 1).await;
@@ -514,11 +510,11 @@ impl<'d> SSD1306<'d> {
 
     pub async fn render<const LEN: usize>(&mut self, data: [u8; LEN], area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
-        defmt::debug!("SSD1306 render column addr");
+        //defmt::debug!("SSD1306 render column addr");
         self.set_column_addr(area.start_col, area.end_col).await;
-        defmt::debug!("SSD1306 render page addr");
+        //defmt::debug!("SSD1306 render page addr");
         self.set_page_addr(area.start_page, area.end_page).await;
-        defmt::debug!("SSD1306 render data {}", LEN);
+        //defmt::debug!("SSD1306 render data {}", LEN);
         self.send_data(data).await;
     }
 
@@ -604,7 +600,6 @@ impl<'d> SSD1306<'d> {
         };
         let idx = Self::get_font_index(ch);
         let mut fb_idx = (y * 128 + x) as usize;
-
         for i in 0..8 {
             buf[fb_idx] = FONT[idx * 8 + i];
             fb_idx += 1;

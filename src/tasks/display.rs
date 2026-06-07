@@ -81,6 +81,7 @@ pub async fn display_task(
     loop {
         //let status_string = display_channel.receive().await;
         if let Ok(status_string) = display_channel.try_receive() {
+            defmt::debug!("SSD1306 status string {}", status_string);
             SSD1306::write_string(&mut display_buf, 0, 0, &status_string);
             ssd1306.render(display_buf, &frame_area).await;
             // let _ = display.set_position(0, 0);
