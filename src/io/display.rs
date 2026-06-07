@@ -1,2 +1,0 @@
-pub const SSD1306_I2C_ADDR_DEFAULT: u8 = 0x3C;
-pub const SSD1306_I2C_ADDR_SECONDARY: u8 = 0x3D;

@@ -61,9 +61,8 @@ mod utils;
 
 use controls::{AnalogOutput, Debouncer};
 use io::{
-    display::{SSD1306_I2C_ADDR_DEFAULT, SSD1306_I2C_ADDR_SECONDARY},
     flash::FLASH_SIZE,
-    i2c::i2cpio,
+    i2c::i2cpio::{I2CPIO, pio_task_sm0_irq0},
 };
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
@@ -268,14 +267,16 @@ fn main() -> ! {
     let Pio {
         mut common,
         irq0,
-        mut sm0,
+        sm0,
         ..
     } = Pio::new(p.PIO0, IrqsAdcPioDma);
 
     let sda_pin = p.PIN_0;
     let scl_pin = p.PIN_1;
-    i2cpio::setup_i2c_pio(&mut common, &mut sm0, sda_pin, scl_pin);
     let dma_ch0 = dma::Channel::new(p.DMA_CH0, IrqsAdcPioDma);
+    let mut i2cpio = I2CPIO::new(sm0, Some(dma_ch0));
+    // let mut i2cpio = I2CPIO::new(sm0, None);
+    i2cpio.setup_i2c_pio(&mut common, sda_pin, scl_pin);
 
     let Pio {
         mut common,
@@ -327,8 +328,8 @@ fn main() -> ! {
                 // -- digital input
                 spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
                 // -- display
-                spawner.spawn(unwrap!(i2cpio::pio_task_sm0_irq0(irq0)));
-                spawner.spawn(unwrap!(display_task(sm0, dma_ch0, &DISPLAY_CHANNEL)));
+                spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
+                spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
                 //spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
             });
         },

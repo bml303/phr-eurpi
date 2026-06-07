@@ -22,7 +22,7 @@ use embedded_graphics::{
 use heapless::String;
 //use ssd1306::{I2CDisplayInterface, Ssd1306, mode::TerminalMode, prelude::*};
 
-use crate::io::i2c::{i2cpio, ssd1306::*};
+use crate::io::i2c::{i2cpio::I2CPIO, ssd1306::*};
 
 #[embassy_executor::task]
 pub async fn display_task(
@@ -32,32 +32,49 @@ pub async fn display_task(
     //     TerminalMode,
     // >,
     // text_style: MonoTextStyle<'static, BinaryColor>,
-    mut sm: StateMachine<'static, PIO0, 0>,
-    mut dma_ch: DmaChannel<'static>,
+    i2cpio: I2CPIO<'static>,
     display_channel: &'static Channel<CriticalSectionRawMutex, String<14>, 10>,
 ) {
-    let ssd1306 = SSD1306::new(SSD1306Addr::Default);
-    ssd1306.init(&mut sm, &mut dma_ch).await;
+    defmt::debug!("SSD1306 initialization");
+    let mut ssd1306 = SSD1306::new(i2cpio, SSD1306Addr::Default);
+    ssd1306.init().await;
+    defmt::debug!("SSD1306 init completed");
     let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
-    // -- zero the entire display
-    let frame_area = SSD1306RenderArea::new();
-    ssd1306
-        .render(&mut sm, &mut dma_ch, display_buf, &frame_area)
-        .await;
     // -- intro sequence: flash the screen 3 times
     let delay_dur = Duration::from_millis(500);
-
-    ssd1306.set_entire_on_all(&mut sm, &mut dma_ch).await; // -- set all pixels on
     yield_now().await;
     Timer::after(delay_dur).await;
+    defmt::debug!("SSD1306 display on all");
+    ssd1306.enable_entire_on_all().await; // -- set all pixels on
+    yield_now().await;
+    Timer::after(delay_dur).await;
+    //loop {
     for _i in 0..3 {
-        ssd1306.set_display_off(&mut sm, &mut dma_ch).await; // -- switch display off
+        defmt::debug!("SSD1306 display off");
+        ssd1306.set_display_off().await; // -- switch display off
         yield_now().await;
         Timer::after(delay_dur).await;
-        ssd1306.set_display_on(&mut sm, &mut dma_ch).await; // -- go back to following RAM for pixel state
+        defmt::debug!("SSD1306 display on");
+        ssd1306.set_display_on().await; // -- switch display on
         yield_now().await;
         Timer::after(delay_dur).await;
     }
+    defmt::debug!("SSD1306 display off");
+    ssd1306.set_display_off().await; // -- switch display off
+    yield_now().await;
+    defmt::debug!("SSD1306 display on ram");
+    ssd1306.disable_entire_on().await; // -- go back to following RAM for pixel state
+    yield_now().await;
+    // Timer::after(delay_dur).await;
+    // defmt::debug!("SSD1306 display on");
+    // ssd1306.set_display_on().await; // -- go back to following RAM for pixel state
+    // yield_now().await;
+    // Timer::after(delay_dur).await;
+    // -- zero the entire display
+    defmt::debug!("SSD1306 clearing display");
+    let frame_area = SSD1306RenderArea::new();
+    ssd1306.render(display_buf, &frame_area).await;
+    defmt::debug!("SSD1306 display cleared");
 
     // let _ = display.init();
     // let _ = display.clear();
@@ -65,9 +82,7 @@ pub async fn display_task(
         //let status_string = display_channel.receive().await;
         if let Ok(status_string) = display_channel.try_receive() {
             SSD1306::write_string(&mut display_buf, 0, 0, &status_string);
-            ssd1306
-                .render(&mut sm, &mut dma_ch, display_buf, &frame_area)
-                .await;
+            ssd1306.render(display_buf, &frame_area).await;
             // let _ = display.set_position(0, 0);
             // for c in status_string.drain(..) {
             //     let _ = display.print_char(c);
