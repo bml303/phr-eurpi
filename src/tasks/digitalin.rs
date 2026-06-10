@@ -10,7 +10,7 @@ use embassy_rp::{
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
 
-use super::SM0_CLOCK_DIVIDER_48_KHZ;
+use super::SM_CLOCK_DIVIDER_48_KHZ;
 
 // -- ---------------------------------------------------------------------
 // -- SM0 - Digital Input
@@ -34,7 +34,7 @@ pub fn setup_pio_task_sm3<'d>(
     cfg.use_program(&pio.load_program(&prg.program), &[]);
     let in_pin = pio.make_pio_pin(pin);
     cfg.set_in_pins(&[&in_pin]);
-    cfg.clock_divider = calculate_pio_clock_divider(SM0_CLOCK_DIVIDER_48_KHZ);
+    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_48_KHZ);
     cfg.shift_in.auto_fill = true;
     cfg.shift_in.direction = ShiftDirection::Right;
     sm3.set_pin_dirs(PioPinDirection::In, &[&in_pin]);
@@ -50,6 +50,5 @@ pub async fn pio_task_sm3(
     loop {
         irq3.wait().await;
         info!("IRQ trigged");
-        yield_now().await;
     }
 }

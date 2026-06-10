@@ -64,6 +64,7 @@ const SSD1306_SET_DISP_CLK_DIV: u8 = 0xD5;
 const SSD1306_SET_PRECHARGE: u8 = 0xD9;
 const SSD1306_SET_COM_PIN_CFG: u8 = 0xDA;
 const SSD1306_SET_VCOM_DESEL: u8 = 0xDB;
+const SSD1306_NOP: u8 = 0xE3;
 
 const SSD1306_PAGE_HEIGHT: u8 = 8;
 pub const SSD1306_NUM_PAGES: u8 = SSD1306_HEIGHT / SSD1306_PAGE_HEIGHT;
@@ -214,7 +215,7 @@ impl<'d> SSD1306<'d> {
         // -- Co = 1, D/C = 0 => the driver expects a command
         //i2c_write_two_bytes(, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
         self.i2cpio
-            .i2c_write_byte_and_data_v2(self.dev_addr, SSD1306_CONTROL_COMMAND, cmd)
+            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_COMMAND, cmd)
             .await;
     }
 
@@ -222,8 +223,9 @@ impl<'d> SSD1306<'d> {
         // -- in horizontal addressing mode, the column address pointer auto-increments
         // -- and then wraps around to the next page, so we can send the entire frame
         // -- buffer in one gooooooo!
+        defmt::debug!("Sending data {:?}", data);
         self.i2cpio
-            .i2c_write_byte_and_data_v2(self.dev_addr, SSD1306_CONTROL_DATA, data)
+            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
             .await;
     }
 
@@ -264,6 +266,11 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_display_on(&mut self) {
         let cmd = [SSD1306_SET_DISP_ON];
+        self.send_cmd(cmd).await;
+    }
+
+    pub async fn nop(&mut self) {
+        let cmd = [SSD1306_NOP];
         self.send_cmd(cmd).await;
     }
 
@@ -437,75 +444,39 @@ impl<'d> SSD1306<'d> {
     }
 
     pub async fn init(&mut self) {
-        self.i2cpio.enable();
-        defmt::debug!("SSD1306 init 1");
+        // self.nop().await;
+        // self.i2cpio
+        //     .i2c_write(
+        //         self.dev_addr,
+        //         [
+        //             SSD1306_CONTROL_COMMAND,
+        //             SSD1306_NOP,
+        //             SSD1306_CONTROL_COMMAND,
+        //             SSD1306_SET_DISP_OFF,
+        //             SSD1306_CONTROL_COMMAND,
+        //             SSD1306_SET_MUX_RATIO,
+        //             SSD1306_HEIGHT - 1,
+        //         ],
+        //     )
+        //     .await;
+        self.nop().await;
+        self.set_display_off().await;
         self.set_mux_ratio(SSD1306_HEIGHT - 1).await;
-        defmt::debug!("SSD1306 init 2");
         self.set_display_offset(0).await;
-        defmt::debug!("SSD1306 init 3");
         self.set_display_start_line(0).await;
-        defmt::debug!("SSD1306 init 4");
         self.set_segment_remap(true).await; // set segment re-map, column address 127 is mapped to SEG0
-        defmt::debug!("SSD1306 init 5");
         self.set_com_out_scan_dir(true).await;
-        defmt::debug!("SSD1306 init 6");
         self.set_com_pin_cfg(false, false).await;
-        defmt::debug!("SSD1306 init 7");
         self.set_contrast(CONTRAST_DEFAULT).await;
-        defmt::debug!("SSD1306 init 8");
         self.disable_entire_on().await;
-        defmt::debug!("SSD1306 init 9");
         self.set_display_normal().await;
-        defmt::debug!("SSD1306 init 10");
         self.set_disp_clk_div(OSCILLATOR_FREQUENCY_DEFAULT, DIVIDE_RATIO_DEFAULT)
-            .await; // -- divide ratio = 1, standard oscillator frequency
-        defmt::debug!("SSD1306 init 11");
+            .await; // -- standard oscillator frequency, divide ratio = 1
         self.cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Horizontal)
             .await;
-        defmt::debug!("SSD1306 init 12");
         self.disable_horizontal_scrolling().await;
-        defmt::debug!("SSD1306 init 13");
         self.enable_charge_pump().await;
-        defmt::debug!("SSD1306 init 14");
         self.set_display_on().await;
-
-        // defmt::debug!("SSD1306 init 1");
-        // self.set_display_off().await;
-        // defmt::debug!("SSD1306 init 2");
-        // self.set_disp_clk_div(OSCILLATOR_FREQUENCY_DEFAULT, DIVIDE_RATIO_DEFAULT)
-        //     .await; // -- standard oscillator frequency, divide ratio = 1
-        // defmt::debug!("SSD1306 init 3");
-        // self.set_mux_ratio(SSD1306_HEIGHT - 1).await;
-        // defmt::debug!("SSD1306 init 4");
-        // self.set_display_offset(0).await;
-        // defmt::debug!("SSD1306 init 5");
-        // self.set_display_start_line(0).await;
-        // defmt::debug!("SSD1306 init 6");
-        // self.disable_charge_pump().await;
-        // defmt::debug!("SSD1306 init 7");
-        // self.cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Horizontal)
-        //     .await;
-        // defmt::debug!("SSD1306 init 8");
-        // self.set_segment_remap(true).await; // set segment re-map, column address 127 is mapped to SEG0
-        // defmt::debug!("SSD1306 init 9");
-        // self.set_com_out_scan_dir(true).await;
-        // defmt::debug!("SSD1306 init 10");
-        // self.set_com_pin_cfg(false, false).await;
-        // defmt::debug!("SSD1306 init 11");
-        // self.set_contrast(CONTRAST_DEFAULT).await;
-        // defmt::debug!("SSD1306 init 12");
-        // self.set_vcomh_deselect_level(SSD1306VcomhDeselectLevel::Auto)
-        //     .await;
-        // defmt::debug!("SSD1306 init 13");
-        // self.set_precharge(PHASE1_DEFAULT, PHASE2_DEFAULT).await;
-        // defmt::debug!("SSD1306 init 14");
-        // self.set_entire_on_ram().await;
-        // defmt::debug!("SSD1306 init 15");
-        // self.set_display_normal().await;
-        // defmt::debug!("SSD1306 init 16");
-        // self.disable_horizontal_scrolling().await;
-        // defmt::debug!("SSD1306 init 17");
-        // self.set_display_on().await;
     }
 
     pub async fn render<const LEN: usize>(&mut self, data: [u8; LEN], area: &SSD1306RenderArea) {

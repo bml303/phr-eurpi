@@ -2,10 +2,13 @@
 #![no_main]
 #![allow(async_fn_in_trait)]
 
+use core::mem::ManuallyDrop;
+use core::sync::atomic::{AtomicBool, compiler_fence};
 use cortex_m_rt::entry;
 //use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::{Executor, InterruptExecutor};
+use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
     adc::{
@@ -17,12 +20,13 @@ use embassy_rp::{
     config::Config,
     dma,
     flash::Flash,
-    gpio::{Input, Level, Output, Pull},
+    gpio::{self, Input, Level, Output, Pull},
     i2c::{self, Async as I2cAsync, Config as I2cConfig, I2c},
     interrupt,
     interrupt::{InterruptExt, Priority},
-    multicore::{Stack, spawn_core1},
-    peripherals::{DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH10, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
+    multicore::Stack, //spawn_core1},
+    pac,
+    peripherals::{CORE1, DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH10, DMA_CH11, I2C0, I2C1, PIO0, PIO1},
     pio::{
         Common, Config as PioConfig, Direction as PioPinDirection, FifoJoin,
         InterruptHandler as PioInterruptHandler, Irq, PinConfig, Pio, PioPin, ShiftDirection,
@@ -66,9 +70,9 @@ use io::{
 };
 use tasks::{
     ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
-    I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task, osc_task_consolidated, osc_task_dac,
-    osc_task_generate, pio_task_sm2, pio_task_sm2_irq2, pio_task_sm3, setup_pio_task_sm2,
-    setup_pio_task_sm3,
+    I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task, oscillator_irq1_handler,
+    oscillator_irq2_handler, pio_task_sm3, setup_oscillator_clock_pio_task,
+    setup_oscillator_pio_task, setup_pio_task_sm3,
 };
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -77,8 +81,9 @@ const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 static EXECUTOR_CORE0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR_CORE1: StaticCell<Executor> = StaticCell::new();
-//static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
-//static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
+// static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
+static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
+// static EXECUTOR_LOW: StaticCell<Executor> = StaticCell::new();
 
 // static ANALOG_OUT_1: AtomicU8 = AtomicU8::new(0);
 // static ANALOG_OUT_2: AtomicU8 = AtomicU8::new(0);
@@ -95,10 +100,10 @@ bind_interrupts!(
         PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
         PIO1_IRQ_0 => PioInterruptHandler<PIO1>;
         DMA_IRQ_0 =>  dma::InterruptHandler<DMA_CH0>,
-                        dma::InterruptHandler<DMA_CH1>,
-                        dma::InterruptHandler<DMA_CH2>,
-                        dma::InterruptHandler<DMA_CH10>,
-                        dma::InterruptHandler<DMA_CH11>;
+                      dma::InterruptHandler<DMA_CH1>,
+                      dma::InterruptHandler<DMA_CH2>,
+                      dma::InterruptHandler<DMA_CH10>,
+                      dma::InterruptHandler<DMA_CH11>;
     }
 );
 
@@ -111,24 +116,259 @@ bind_interrupts!(struct IrqsI2c1 {
 });
 
 // #[interrupt]
-// unsafe fn SWI_IRQ_1() {
+// unsafe fn SWI_IRQ_4() {
 //     unsafe { EXECUTOR_HIGH.on_interrupt() }
 // }
 
-// #[interrupt]
-// unsafe fn SWI_IRQ_2() {
-//     unsafe { EXECUTOR_MEDIUM.on_interrupt() }
+#[interrupt]
+unsafe fn SWI_IRQ_5() {
+    unsafe { EXECUTOR_MEDIUM.on_interrupt() }
+}
+
+// #[embassy_executor::task]
+// async fn run_low() {
+//     loop {
+//         yield_now().await;
+//     }
+// }
+
+// https://github.com/nvzqz/bad-rs/blob/master/src/never.rs
+mod bad {
+    pub(crate) type Never = <F as HasOutput>::Output;
+
+    pub trait HasOutput {
+        type Output;
+    }
+
+    impl<O> HasOutput for fn() -> O {
+        type Output = O;
+    }
+
+    type F = fn() -> !;
+}
+
+// Push a value to the inter-core FIFO, block until space is available
+#[inline(always)]
+pub(crate) fn fifo_write(value: u32) {
+    let sio = pac::SIO;
+    // Wait for the FIFO to have enough space
+    while !sio.fifo().st().read().rdy() {
+        cortex_m::asm::nop();
+    }
+    sio.fifo().wr().write_value(value);
+    // Fire off an event to the other core.
+    // This is required as the other core may be `wfe` (waiting for event)
+    cortex_m::asm::sev();
+}
+
+// Pop a value from inter-core FIFO, block until available
+#[inline(always)]
+fn fifo_read() -> u32 {
+    let sio = pac::SIO;
+    // Wait until FIFO has data
+    while !sio.fifo().st().read().vld() {
+        cortex_m::asm::nop();
+    }
+    sio.fifo().rd().read()
+}
+
+// Pop a value from inter-core FIFO, `wfe` until available
+#[inline(always)]
+#[allow(unused)]
+fn fifo_read_wfe() -> u32 {
+    let sio = pac::SIO;
+    // Wait until FIFO has data
+    while !sio.fifo().st().read().vld() {
+        cortex_m::asm::wfe();
+    }
+    sio.fifo().rd().read()
+}
+
+// Drain inter-core FIFO
+#[inline(always)]
+fn fifo_drain() {
+    let sio = pac::SIO;
+    while sio.fifo().st().read().vld() {
+        let _ = sio.fifo().rd().read();
+    }
+}
+
+#[inline(always)]
+unsafe fn install_stack_guard(stack_bottom: *mut usize) -> Result<(), ()> {
+    let core = unsafe { cortex_m::Peripherals::steal() };
+
+    // Fail if MPU is already configured
+    if core.MPU.ctrl.read() != 0 {
+        return Err(());
+    }
+
+    // The minimum we can protect is 32 bytes on a 32 byte boundary, so round up which will
+    // just shorten the valid stack range a tad.
+    let addr = (stack_bottom as u32 + 31) & !31;
+    // Mask is 1 bit per 32 bytes of the 256 byte range... clear the bit for the segment we want
+    let subregion_select = 0xff ^ (1 << ((addr >> 5) & 7));
+    unsafe {
+        core.MPU.ctrl.write(5); // enable mpu with background default map
+        core.MPU.rbar.write((addr & !0xff) | (1 << 4)); // set address and update RNR
+        core.MPU.rasr.write(
+            1 // enable region
+               | (0x7 << 1) // size 2^(7 + 1) = 256
+               | (subregion_select << 8)
+               | 0x10000000, // XN = disable instruction fetch; no other bits means no permissions
+        );
+    }
+    Ok(())
+}
+
+#[inline(always)]
+unsafe fn core1_setup(stack_bottom: *mut usize) {
+    unsafe {
+        if install_stack_guard(stack_bottom).is_err() {
+            // currently only happens if the MPU was already set up, which
+            // would indicate that the core is already in use from outside
+            // embassy, somehow. trap if so since we can't deal with that.
+            cortex_m::asm::udf();
+        }
+        interrupt::IO_IRQ_BANK0.disable();
+        interrupt::IO_IRQ_BANK0.set_priority(interrupt::Priority::P3);
+        interrupt::IO_IRQ_BANK0.enable();
+    }
+}
+
+// pub fn spawn_core1<F, const SIZE: usize>(
+//     _core1: Peri<'static, CORE1>,
+//     stack: &'static mut Stack<SIZE>,
+//     entry: F,
+// ) where
+//     F: FnOnce() -> bad::Never + Send + 'static,
+// {
+//     // The first two ignored `u64` parameters are there to take up all of the registers,
+//     // which means that the rest of the arguments are taken from the stack,
+//     // where we're able to put them from core 0.
+//     extern "C" fn core1_startup<F: FnOnce() -> bad::Never>(
+//         _: u64,
+//         _: u64,
+//         entry: *mut ManuallyDrop<F>,
+//         stack_bottom: *mut usize,
+//     ) -> ! {
+//         unsafe { core1_setup(stack_bottom) };
+
+//         let entry = unsafe { ManuallyDrop::take(&mut *entry) };
+
+//         // make sure the preceding read doesn't get reordered past the following fifo write
+//         compiler_fence(Ordering::SeqCst);
+
+//         unsafe { interrupt::SIO_IRQ_PROC1.enable() };
+
+//         entry()
+//     }
+
+//     // Reset the core
+//     let psm = pac::PSM;
+//     psm.frce_off().modify(|w| w.set_proc1(true));
+//     while !psm.frce_off().read().proc1() {
+//         cortex_m::asm::nop();
+//     }
+//     psm.frce_off().modify(|w| w.set_proc1(false));
+
+//     // The ARM AAPCS ABI requires 8-byte stack alignment.
+//     // #[align] on `struct Stack` ensures the bottom is aligned, but the top could still be
+//     // unaligned if the user chooses a stack size that's not multiple of 8.
+//     // So, we round down to the next multiple of 8.
+//     let stack_words = stack.mem.len() / 8 * 2;
+//     let mem = unsafe {
+//         core::slice::from_raw_parts_mut(stack.mem.as_mut_ptr() as *mut usize, stack_words)
+//     };
+
+//     // Set up the stack
+//     let mut stack_ptr = unsafe { mem.as_mut_ptr().add(mem.len()) };
+
+//     // We don't want to drop this, since it's getting moved to the other core.
+//     let mut entry = ManuallyDrop::new(entry);
+
+//     // Push the arguments to `core1_startup` onto the stack.
+//     unsafe {
+//         // Push `stack_bottom`.
+//         stack_ptr = stack_ptr.sub(1);
+//         stack_ptr.cast::<*mut usize>().write(mem.as_mut_ptr());
+
+//         // Push `entry`.
+//         stack_ptr = stack_ptr.sub(1);
+//         stack_ptr.cast::<*mut ManuallyDrop<F>>().write(&mut entry);
+//     }
+
+//     // Make sure the compiler does not reorder the stack writes after to after the
+//     // below FIFO writes, which would result in them not being seen by the second
+//     // core.
+//     //
+//     // From the compiler perspective, this doesn't guarantee that the second core
+//     // actually sees those writes. However, we know that the RP2040 doesn't have
+//     // memory caches, and writes happen in-order.
+//     compiler_fence(core::sync::atomic::Ordering::Release);
+
+//     let p = unsafe { cortex_m::Peripherals::steal() };
+//     let vector_table = p.SCB.vtor.read();
+
+//     // After reset, core 1 is waiting to receive commands over FIFO.
+//     // This is the sequence to have it jump to some code.
+//     let cmd_seq = [
+//         0,
+//         0,
+//         1,
+//         vector_table as usize,
+//         stack_ptr as usize,
+//         core1_startup::<F> as *const () as usize,
+//     ];
+
+//     let mut seq = 0;
+//     let mut fails = 0;
+//     loop {
+//         let cmd = cmd_seq[seq] as u32;
+//         if cmd == 0 {
+//             fifo_drain();
+//             cortex_m::asm::sev();
+//         }
+//         fifo_write(cmd);
+
+//         let response = fifo_read();
+//         if cmd == response {
+//             seq += 1;
+//         } else {
+//             seq = 0;
+//             fails += 1;
+//             if fails > 16 {
+//                 // The second core isn't responding, and isn't going to take the entrypoint
+//                 defmt::panic!("CORE1 not responding");
+//             }
+//         }
+//         if seq >= cmd_seq.len() {
+//             break;
+//         }
+//     }
+
+//     info!("core1 spawn completed");
+
+//     // // Wait until the other core has copied `entry` before returning.
+//     // fifo_read();
+
+//     // info!("core1 spawn FIFO read");
+
+//     // Enable fifo interrupt on CORE0 for `pend irq` functionality.
+//     unsafe { interrupt::SIO_IRQ_PROC1.enable() };
+
+//     info!("core1 spawn FIFO interrupt on core0 enabled");
 // }
 
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
 #[entry]
 fn main() -> ! {
-    // Set up for clock frequency of 200 MHz, setting all necessary defaults.
-    let config = Config::new(ClockConfig::system_freq(200_000_000).unwrap());
+    // -- set up for clock frequency of 200 MHz
+    //let config = Config::new(ClockConfig::system_freq(200_000_000).unwrap());
+    // -- set up for default clock frequency of 125 MHz
+    let config = Config::default();
 
     // -- init pico and get peripherals
-    //let p = embassy_rp::init(Default::default());
     let p = embassy_rp::init(config);
     info!("Starting up {} {}", CARGO_PKG_NAME, CARGO_PKG_VERSION);
 
@@ -280,9 +520,10 @@ fn main() -> ! {
 
     let Pio {
         mut common,
+        irq1,
         irq2,
         irq3,
-        //mut sm1,
+        mut sm1,
         mut sm2,
         mut sm3,
         ..
@@ -300,10 +541,12 @@ fn main() -> ! {
     // );
     //let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
     //info!("pio_task_sm1 is setup");
+    // -- PIO for oscillator clock
+    setup_oscillator_clock_pio_task(&mut common, &mut sm1);
     // -- PIO for MPC4725 DAC
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
-    setup_pio_task_sm2(&mut common, &mut sm2, sda_1, scl_1);
+    setup_oscillator_pio_task(&mut common, &mut sm2, sda_1, scl_1);
     let dma_ch2 = dma::Channel::new(p.DMA_CH2, IrqsAdcPioDma);
     info!("pio_task_sm2 is setup");
     // -- PIO for digital in (triggers)
@@ -315,76 +558,133 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
 
     // -- spawn PIO tasks on core 1
-    info!("Spawning Task running on core 1");
-    spawn_core1(
+    info!("Spawning tasks running on core 1");
+    embassy_rp::multicore::spawn_core1(
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         move || {
             let executor1 = EXECUTOR_CORE1.init(Executor::new());
-            executor1.run(|spawner| {
-                // -- oscillator
-                spawner.spawn(unwrap!(pio_task_sm2_irq2(irq2)));
-                spawner.spawn(unwrap!(pio_task_sm2(sm2, Some(dma_ch2))));
-                // -- digital input
-                spawner.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+            executor1.run(|spawner_c1| {
+                spawner_c1.spawn(unwrap!(inputs_task(
+                    adc,
+                    adc_ch_ain,
+                    adc_ch_kn1,
+                    adc_ch_kn2,
+                    //dma_ch10,
+                    btn1,
+                    btn2,
+                    analog_out_1,
+                    analog_out_2,
+                    analog_out_3,
+                    analog_out_4,
+                    analog_out_5,
+                    analog_out_6,
+                    &DISPLAY_CHANNEL,
+                )));
                 // -- display
-                spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
-                //spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
-                //spawner.spawn(unwrap!(display_task(display, text_style, &DISPLAY_CHANNEL)));
+                spawner_c1.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
+                spawner_c1.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+                info!("All running on core1");
             });
         },
     );
 
     // -- ---------------------------------------------------------------------
+    // -- Medium-priority executor: SWI_IRQ_5, priority level 3
+    // -- ---------------------------------------------------------------------
+    interrupt::SWI_IRQ_5.set_priority(Priority::P3);
+    let spawner_m = EXECUTOR_MEDIUM.start(interrupt::SWI_IRQ_5);
+    // -- digital input
+    spawner_m.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+    // -- oscillator
+    spawner_m.spawn(unwrap!(oscillator_irq2_handler(irq2)));
+    spawner_m.spawn(unwrap!(oscillator_irq1_handler(
+        irq1,
+        sm1,
+        sm2,
+        Some(dma_ch2)
+    )));
+
+    // -- ---------------------------------------------------------------------
     // -- Core 0 task
     // -- ---------------------------------------------------------------------
 
-    // -- Medium-priority executor: SWI_IRQ_2, priority level 3
-    // interrupt::SWI_IRQ_2.set_priority(Priority::P3);
-    // let spawner = EXECUTOR_MEDIUM.start(interrupt::SWI_IRQ_2);
-    // spawner.spawn(unwrap!(osc_task_consolidated(i2c1)));
-    //spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
-    //spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
+    // // -- High-priority executor: SWI_IRQ_4, priority level 2
+    // interrupt::SWI_IRQ_4.set_priority(Priority::P2);
+    // let spawner_h = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_4);
+    // // -- display
+    // // spawner_h.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
+    // // spawner_h.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+    // // // -- oscillator
+    // // spawner_hi.spawn(unwrap!(oscillator_irq2_handler(irq2)));
+    // // spawner_hi.spawn(unwrap!(oscillator_irq1_handler(
+    // //     irq1,
+    // //     sm1,
+    // //     sm2,
+    // //     Some(dma_ch2)
+    // // )));
+    // // // -- digital input
+    // // spawner_hi.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
 
-    // -- High-priority executor: SWI_IRQ_1, priority level 2
-    // interrupt::SWI_IRQ_1.set_priority(Priority::P2);
-    // let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
-    //spawner.spawn(unwrap!(pio_task_sm2(sm2)));
-    // spawner.spawn(unwrap!(osc_task_consolidated(i2c1)));
-    // spawner.spawn(unwrap!(osc_task_generate(&CHANNEL_OSCILLATOR)));
-    // spawner.spawn(unwrap!(osc_task_dac(i2c1, &CHANNEL_OSCILLATOR)));
-    // spawner.spawn(unwrap!(pio_task_sm0(irq3, sm0)));
-    // spawner.spawn(unwrap!(pio_task_sm1(
+    // // -- oscillator
+    // spawner_m.spawn(unwrap!(oscillator_irq2_handler(irq2)));
+    // spawner_m.spawn(unwrap!(oscillator_irq1_handler(
+    //     irq1,
     //     sm1,
-    //     &ANALOG_OUT_1,
-    //     &ANALOG_OUT_2,
-    //     &ANALOG_OUT_3,
-    //     &ANALOG_OUT_4,
-    //     &ANALOG_OUT_5,
-    //     &ANALOG_OUT_6,
+    //     sm2,
+    //     Some(dma_ch2)
     // )));
-    //spawner.spawn(unwrap!(pio_task_sm2_irq1(irq1, sm2)));
-    //spawner.spawn(unwrap!(pio_task_sm2(sm2)));
+    // // -- digital input
+    // spawner_m.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+
+    // // Low priority executor: runs in thread mode, using WFE/SEV
+    // let executor = EXECUTOR_LOW.init(Executor::new());
+    // executor.run(|spawner_l| {
+    //     spawner_l.spawn(unwrap!(inputs_task(
+    //         adc,
+    //         adc_ch_ain,
+    //         adc_ch_kn1,
+    //         adc_ch_kn2,
+    //         //dma_ch10,
+    //         btn1,
+    //         btn2,
+    //         analog_out_1,
+    //         analog_out_2,
+    //         analog_out_3,
+    //         analog_out_4,
+    //         analog_out_5,
+    //         analog_out_6,
+    //         &DISPLAY_CHANNEL,
+    //     )));
+    //     // // -- display
+    //     // spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
+    //     // spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+    // });
+
+    let executor0 = EXECUTOR_CORE0.init(Executor::new());
+    executor0.run(|spawner| {});
 
     // -- spawn other tasks on core 0
-    let executor0 = EXECUTOR_CORE0.init(Executor::new());
-    executor0.run(|spawner| {
-        spawner.spawn(unwrap!(inputs_task(
-            adc,
-            adc_ch_ain,
-            adc_ch_kn1,
-            adc_ch_kn2,
-            //dma_ch10,
-            btn1,
-            btn2,
-            analog_out_1,
-            analog_out_2,
-            analog_out_3,
-            analog_out_4,
-            analog_out_5,
-            analog_out_6,
-            &DISPLAY_CHANNEL,
-        )));
-        spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
-    });
+    // let executor0 = EXECUTOR_CORE0.init(Executor::new());
+    // executor0.run(|spawner| {
+    //     spawner.spawn(unwrap!(inputs_task(
+    //         adc,
+    //         adc_ch_ain,
+    //         adc_ch_kn1,
+    //         adc_ch_kn2,
+    //         //dma_ch10,
+    //         btn1,
+    //         btn2,
+    //         analog_out_1,
+    //         analog_out_2,
+    //         analog_out_3,
+    //         analog_out_4,
+    //         analog_out_5,
+    //         analog_out_6,
+    //         &DISPLAY_CHANNEL,
+    //     )));
+    //     // -- display
+    //     spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
+    //     spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+    // });
 }

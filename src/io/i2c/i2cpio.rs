@@ -26,7 +26,7 @@ pub const SM_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
 pub struct I2CPIO<'d> {
     sm0: StateMachine<'d, PIO0, 0>,
     dma_ch: Option<DmaChannel<'d>>,
-    data_buf: [u32; 600],
+    data_buf: [u32; 130],
 }
 
 impl<'d> I2CPIO<'d> {
@@ -34,7 +34,7 @@ impl<'d> I2CPIO<'d> {
         I2CPIO {
             sm0,
             dma_ch,
-            data_buf: [0; 600],
+            data_buf: [0; 130],
         }
     }
 
@@ -50,32 +50,33 @@ impl<'d> I2CPIO<'d> {
             r"
             .side_set 1                             ; -- SCL is side set
             public entry_point:
-                set pindirs, 1      side 1 [2]      ; -- 00 - SDA output, SCL high
+                set pindirs, 1      side 1 [1]      ; -- 01 - SDA output, SCL high
+                set pins, 1         side 1          ; -- 02 - SDA high, SCL high
             .wrap_target
-                pull block          side 1          ; -- 01 - load number of bytes to write from TX FIFO, SCL high
-                set pins, 0         side 1 [1]      ; -- 02 - START condition SDA to low, SCL high
-                set x, 7            side 1          ; -- 03 - write 8 bits, SCL high
-                out y, 32           side 1          ; -- 04 - number of bytes to write from OSR, SCL low
-                jmp y-- byte_loop   side 0 [2]      ; -- 05 - jump if y > 0 prior to decrement, SCL low
-                jmp entry_point     side 0          ; -- 06 - restart when zero bytes to write, SCL low
+                pull block          side 1          ; -- 03 - load number of bytes to write from TX FIFO, SCL high
+                set pins, 0         side 1 [1]      ; -- 04 - START condition SDA to low, SCL high
+                set x, 7            side 1          ; -- 05 - write 8 bits, SCL high
+                out y, 32           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
+                jmp y-- byte_loop   side 0 [2]      ; -- 07 - jump if y > 0 prior to decrement, SCL low
+                jmp entry_point     side 0          ; -- 08 - restart when zero bytes to write, SCL low
             byte_loop:
             bit_loop:
-                out pins, 1         side 0          ; -- 07 - read next bit from OSR, SCL low
-                nop                 side 1 [3]      ; -- 08 - confirm SDA value with SCL pulse
-                jmp x-- bit_loop    side 0 [2]      ; -- 09 - jump if x > 0 prior to decrement
-                set pindirs, 0      side 0          ; -- 10 - SDA input
-                set x, 7            side 1 [3]      ; -- 11 - confirm SDA value with SCL pulse
-                jmp pin do_nack     side 0          ; -- 12 - Check ACK
-                set pindirs, 1      side 0          ; -- 13 - SDA output
-                jmp y-- byte_loop   side 0          ; -- 14 - jump if y > 0 prior to decrement
+                out pins, 1         side 0          ; -- 09 - read next bit from OSR, SCL low
+                nop                 side 1 [3]      ; -- 10 - confirm SDA value with SCL pulse
+                jmp x-- bit_loop    side 0 [2]      ; -- 11 - jump if x > 0 prior to decrement
+                set pindirs, 0      side 0          ; -- 12 - SDA input
+                set x, 7            side 1 [3]      ; -- 13 - confirm SDA value with SCL pulse
+                jmp pin do_nack     side 0          ; -- 14 - Check ACK
+                set pindirs, 1      side 0          ; -- 15 - SDA output
+                jmp y-- byte_loop   side 0          ; -- 16 - jump if y > 0 prior to decrement
             do_stop:
-                set pins, 0         side 0          ; -- 15 - SDA low, SCL low
-                set pins, 0         side 1 [3]      ; -- 16 - SDA low, SCL high
-                set pins, 1         side 1 [3]      ; -- 17 - STOP condition SDA to high, SCL high
+                set pins, 0         side 0          ; -- 17 - SDA low, SCL low
+                set pins, 0         side 1 [3]      ; -- 18 - SDA low, SCL high
+                set pins, 1         side 1 [3]      ; -- 19 - STOP condition SDA to high, SCL high
             .wrap
             do_nack:
-                irq nowait 0        side 0 [2]      ; -- 18 - indicate error, SCL low
-                jmp entry_point     side 1          ; -- 19 - continue with start condition
+                irq nowait 0        side 0 [2]      ; -- 20 - indicate error, SCL low
+                jmp entry_point     side 1          ; -- 21 - continue with start condition
             ",
         );
         // -- setup state machine
@@ -102,13 +103,10 @@ impl<'d> I2CPIO<'d> {
             .set_pin_dirs(PioPinDirection::Out, &[&sda_pio_pin, &scl_pio_pin]);
         self.sm0
             .set_pins(Level::High, &[&sda_pio_pin, &scl_pio_pin]);
-    }
-
-    pub fn enable(&mut self) {
         self.sm0.set_enable(true);
     }
 
-    pub async fn i2c_write_byte_and_data_v2<const LEN: usize>(
+    pub async fn i2c_write_byte_and_data<const LEN: usize>(
         &mut self,
         dev_addr: u8,
         cmd_byte: u8,
@@ -127,7 +125,6 @@ impl<'d> I2CPIO<'d> {
         if data.len() >= 2 {
             self.data_buf[1] |= data[1] as u32;
         }
-        yield_now().await;
         let mut j = 2;
         if data.len() >= 3 {
             for i in (2..data.len()).step_by(4) {
@@ -142,7 +139,6 @@ impl<'d> I2CPIO<'d> {
                     self.data_buf[j] |= data[i + 3] as u32;
                 }
                 j += 1;
-                yield_now().await;
             }
         }
         if let Some(dma_ch) = self.dma_ch.as_mut() {

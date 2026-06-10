@@ -12,8 +12,8 @@ pub use digitalin::{pio_task_sm3, setup_pio_task_sm3};
 pub use display::display_task;
 pub use inputs::inputs_task;
 pub use oscillator::{
-    osc_task_consolidated, osc_task_dac, osc_task_generate, pio_task_sm2, pio_task_sm2_irq2,
-    setup_pio_task_sm2,
+    oscillator_irq1_handler, oscillator_irq2_handler, setup_oscillator_clock_pio_task,
+    setup_oscillator_pio_task,
 };
 
 // pub const CHANNEL_OUT_1: u8 = 0;
@@ -41,10 +41,10 @@ const SAMPLE_RATE_24KHZ: f32 = 24000.0;
 // const SAMPLE_RATE_5KHZ: f32 = 5000.0;
 pub const SAMPLE_RATE_48KHZ: f32 = 48000.0;
 
-pub const SM0_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
-pub const SM1_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
-pub const SM2_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
-pub const SM2_CLOCK_DIVIDER_1_6_MHZ: u32 = 1_600_000;
+pub const SM_CLOCK_DIVIDER_48_KHZ: u32 = 48_000;
+pub const SM_CLOCK_DIVIDER_1_MHZ: u32 = 1_000_000;
+pub const SM_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
+pub const SM_CLOCK_DIVIDER_1_6_MHZ: u32 = 1_600_000;
 
 pub const TICKER_EVERY_50_MICROS: u64 = 50; // -- 200'000 Hz = 200 kHz
 pub const TICKER_EVERY_500_MICROS: u64 = 500; // -- 20'000 Hz = 20 kHz
