@@ -15,7 +15,7 @@ use embassy_rp::{
 use heapless::vec::Vec;
 
 // -- bus speed 400 kHz with 4 PIO clock cycles for I2C each high/low interval
-// pub const SM_CLOCK_DIVIDER_1_6_MHZ: u32 = 1_600_000;
+pub const SM_CLOCK_DIVIDER_1_6_MHZ: u32 = 1_600_000;
 // -- bus speed 1 MHz with 4 PIO clock cycles for I2C each high/low interval
 pub const SM_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
 
@@ -56,7 +56,7 @@ impl<'d> I2CPIO<'d> {
                 pull block          side 1          ; -- 03 - load number of bytes to write from TX FIFO, SCL high
                 set pins, 0         side 1 [1]      ; -- 04 - START condition SDA to low, SCL high
                 set x, 7            side 1          ; -- 05 - write 8 bits, SCL high
-                out y, 32           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
+                out y, 16           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
                 jmp y-- byte_loop   side 0 [2]      ; -- 07 - jump if y > 0 prior to decrement, SCL low
                 jmp entry_point     side 0          ; -- 08 - restart when zero bytes to write, SCL low
             byte_loop:
@@ -91,8 +91,8 @@ impl<'d> I2CPIO<'d> {
         cfg.set_set_pins(&[&sda_pio_pin]);
         cfg.set_out_pins(&[&sda_pio_pin]);
         cfg.set_jmp_pin(&sda_pio_pin);
-        //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kH
-        cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
+        cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kH
+        //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
         cfg.out_sticky = true;
         cfg.shift_out.auto_fill = true;
         cfg.shift_out.direction = ShiftDirection::Left;
@@ -106,28 +106,28 @@ impl<'d> I2CPIO<'d> {
         self.sm0.set_enable(true);
     }
 
-    pub async fn i2c_write_byte_and_data<const LEN: usize>(
-        &mut self,
-        dev_addr: u8,
-        cmd_byte: u8,
-        data: [u8; LEN],
-    ) {
+    pub async fn i2c_write_byte_and_data(&mut self, dev_addr: u8, cmd_byte: u8, data: &[u8]) {
         // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-        let no_of_bytes = (LEN + 2) as u32;
+        let no_of_bytes = (data.len() + 2) as u32;
         //defmt::debug!("no_of_bytes is {}", no_of_bytes);
         let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
         //let header = [dev_addr_write, byte];
-        self.data_buf[0] = no_of_bytes;
-        self.data_buf[1] = ((dev_addr_write as u32) << 24) | ((cmd_byte as u32) << 16);
+        self.data_buf[0] = (no_of_bytes << 16) | ((dev_addr_write as u32) << 8) | cmd_byte as u32;
         if data.len() >= 1 {
-            self.data_buf[1] |= (data[0] as u32) << 8;
+            self.data_buf[1] = (data[0] as u32) << 24;
         }
         if data.len() >= 2 {
-            self.data_buf[1] |= data[1] as u32;
+            self.data_buf[1] |= (data[1] as u32) << 16;
+        }
+        if data.len() >= 3 {
+            self.data_buf[1] |= (data[2] as u32) << 8;
+        }
+        if data.len() >= 4 {
+            self.data_buf[1] |= data[3] as u32;
         }
         let mut j = 2;
-        if data.len() >= 3 {
-            for i in (2..data.len()).step_by(4) {
+        if data.len() >= 5 {
+            for i in (5..data.len()).step_by(4) {
                 self.data_buf[j] = (data[i] as u32) << 24;
                 if i + 1 < data.len() {
                     self.data_buf[j] |= (data[i + 1] as u32) << 16;

@@ -67,13 +67,16 @@ pub async fn display_task(
     yield_now().await;
     ssd1306.set_display_on().await; // -- switch display on
     yield_now().await;
+    ssd1306
+        .cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Page)
+        .await;
     // -- zero the entire display
     defmt::debug!("SSD1306 clearing display");
     let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
     let frame_area = SSD1306RenderArea::new();
     ssd1306.render(display_buf, &frame_area).await;
     defmt::debug!("SSD1306 display cleared");
-    return;
+    //return;
 
     // let _ = display.init();
     // let _ = display.clear();
@@ -82,8 +85,8 @@ pub async fn display_task(
         if let Ok(status_string) = display_channel.try_receive() {
             //defmt::debug!("SSD1306 status string {}", status_string);
             //SSD1306::draw_line(&mut display_buf, 0, 0, 32, 32, true);
-            //SSD1306::write_string(&mut display_buf, 0, 0, &status_string);
-            //ssd1306.render(display_buf, &frame_area).await;
+            SSD1306::write_string(&mut display_buf, 0, 0, &status_string);
+            ssd1306.render(display_buf, &frame_area).await;
             // let _ = display.set_position(0, 0);
             // for c in status_string.drain(..) {
             //     let _ = display.print_char(c);

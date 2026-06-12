@@ -215,18 +215,25 @@ impl<'d> SSD1306<'d> {
         // -- Co = 1, D/C = 0 => the driver expects a command
         //i2c_write_two_bytes(, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
         self.i2cpio
-            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_COMMAND, cmd)
+            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_COMMAND, &cmd)
             .await;
     }
 
-    pub async fn send_data<const LEN: usize>(&mut self, data: [u8; LEN]) {
+    pub async fn send_data(&mut self, data: &[u8]) {
         // -- in horizontal addressing mode, the column address pointer auto-increments
         // -- and then wraps around to the next page, so we can send the entire frame
         // -- buffer in one gooooooo!
-        defmt::debug!("Sending data {:?}", data);
+        // for i in 0..data.len() {
+
+        // }
+        //defmt::debug!("Sending data {:?}", data);
         self.i2cpio
             .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
             .await;
+
+        // self.i2cpio
+        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
+        //     .await;
     }
 
     // ------------------------------------------------------------------------
@@ -299,16 +306,12 @@ impl<'d> SSD1306<'d> {
     // -- address setting commands
     // ------------------------------------------------------------------------
 
-    pub async fn set_column_start_addr_for_page_mode(
-        &mut self,
-        lower_start_addr: u8,
-        higher_start_addr: u8,
-    ) {
-        let lower_start_addr = min(lower_start_addr, ADDR_COLUMN_MAX_PAGE_MODE);
-        let cmd = [lower_start_addr];
+    pub async fn set_column_start_addr_for_page_mode(&mut self, start_addr: u8) {
+        // -- lower nibble
+        let cmd = [start_addr & 0xf];
         self.send_cmd(cmd).await;
-        let higher_start_addr = min(higher_start_addr, ADDR_COLUMN_MAX_PAGE_MODE);
-        let cmd = [SSD1306_SET_HIGH_COL_START_ADDR | higher_start_addr];
+        // -- higher nibble
+        let cmd = [SSD1306_SET_HIGH_COL_START_ADDR | (start_addr >> 4)];
         self.send_cmd(cmd).await;
     }
 
@@ -472,7 +475,7 @@ impl<'d> SSD1306<'d> {
         self.set_display_normal().await;
         self.set_disp_clk_div(OSCILLATOR_FREQUENCY_DEFAULT, DIVIDE_RATIO_DEFAULT)
             .await; // -- standard oscillator frequency, divide ratio = 1
-        self.cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Horizontal)
+        self.cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Page)
             .await;
         self.disable_horizontal_scrolling().await;
         self.enable_charge_pump().await;
@@ -481,12 +484,14 @@ impl<'d> SSD1306<'d> {
 
     pub async fn render<const LEN: usize>(&mut self, data: [u8; LEN], area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
-        //defmt::debug!("SSD1306 render column addr");
-        self.set_column_addr(area.start_col, area.end_col).await;
-        //defmt::debug!("SSD1306 render page addr");
-        self.set_page_addr(area.start_page, area.end_page).await;
-        //defmt::debug!("SSD1306 render data {}", LEN);
-        self.send_data(data).await;
+        self.set_column_start_addr_for_page_mode(area.start_col)
+            .await;
+        let mut i = 0;
+        for chunk in data.chunks(128) {
+            self.set_page_addr_start_for_page_mode(i).await;
+            self.send_data(chunk).await;
+            i = i + 1;
+        }
     }
 
     pub fn set_pixel(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
