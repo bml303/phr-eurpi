@@ -64,7 +64,7 @@ impl<'d> I2CPIO<'d> {
                 pull block          side 1          ; -- 03 - load number of bytes to write from TX FIFO, SCL high
                 set pins, 0         side 1 [1]      ; -- 04 - START condition SDA to low, SCL high
                 set x, 7            side 1          ; -- 05 - write 8 bits, SCL high
-                out y, 24           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
+                out y, 16           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
                 jmp y-- byte_loop   side 0 [2]      ; -- 07 - jump if y > 0 prior to decrement, SCL low
                 jmp entry_point     side 0          ; -- 08 - restart when zero bytes to write, SCL low
             byte_loop:
@@ -114,12 +114,12 @@ impl<'d> I2CPIO<'d> {
         self.sm0.set_enable(true);
     }
 
-    pub async fn i2c_write_data(&mut self, dev_addr: u8, data: &[u8]) {
+    pub async fn i2c_write_byte_with_data(&mut self, dev_addr: u8, byte: u8, data: &[u8]) {
         // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-        let no_of_bytes = (data.len() + 1) as u32;
+        let no_of_bytes = (data.len() + 2) as u32;
         //defmt::debug!("no_of_bytes is {}", no_of_bytes);
         let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
-        self.data_buf[0] = (no_of_bytes << 8) | (dev_addr_write as u32);
+        self.data_buf[0] = (no_of_bytes << 16) | ((dev_addr_write as u32) << 8) | (byte as u32);
         let mut j = 1;
         if data.len() > 0 {
             for i in (0..data.len()).step_by(4) {

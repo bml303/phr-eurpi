@@ -216,9 +216,7 @@ pub enum SSD1306Addr {
 
 pub struct SSD1306<'d> {
     i2cpio: I2CPIO<'d>,
-    //i2c0: I2c<'d, I2C0, I2cAsync>,
     dev_addr: u8,
-    write_buf: [u8; WRITE_BUF_LEN],
 }
 
 impl<'d> SSD1306<'d> {
@@ -227,61 +225,19 @@ impl<'d> SSD1306<'d> {
             SSD1306Addr::Default => SSD1306_I2C_ADDR_DEFAULT,
             SSD1306Addr::Secondary => SSD1306_I2C_ADDR_SECONDARY,
         };
-        Self {
-            i2cpio,
-            dev_addr,
-            write_buf: [0; WRITE_BUF_LEN],
-        }
+        Self { i2cpio, dev_addr }
     }
 
-    // pub fn new(i2c0: I2c<'d, I2C0, I2cAsync>, addr: SSD1306Addr) -> Self {
-    //     let dev_addr = match addr {
-    //         SSD1306Addr::Default => SSD1306_I2C_ADDR_DEFAULT,
-    //         SSD1306Addr::Secondary => SSD1306_I2C_ADDR_SECONDARY,
-    //     };
-    //     Self {
-    //         i2c0,
-    //         dev_addr,
-    //         write_buf: [0; WRITE_BUF_LEN],
-    //     }
-    // }
-
-    pub async fn send_cmd<const LEN: usize>(&mut self, cmd: [u8; LEN]) {
-        // -- I2C write process expects a control byte followed by data
-        // --this "data" can be a command or data to follow up a command
-        // -- Co = 1, D/C = 0 => the driver expects a command
-        // self.i2cpio
-        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_NCO_COMMAND, &cmd)
-        //     .await;
-        self.write_buf[0] = SSD1306_NCO_COMMAND;
-        self.write_buf[1..=cmd.len()].copy_from_slice(&cmd[0..cmd.len()]);
+    pub async fn send_cmd(&mut self, cmd_bytes: &[u8]) {
         self.i2cpio
-            .i2c_write_data(self.dev_addr, &self.write_buf[0..=cmd.len()])
+            .i2c_write_byte_with_data(self.dev_addr, SSD1306_NCO_COMMAND, cmd_bytes)
             .await;
-        // let _ = self
-        //     .i2c0
-        //     .blocking_write(self.dev_addr, &self.write_buf[..=cmd.len()]);
     }
 
-    pub async fn send_data(&mut self, data: &[u8]) {
-        self.write_buf[0] = SSD1306_NCO_DATA;
-        //let chuncks = data.chunks(16);
-        // for chunk in chuncks {
-        //     let chunk_len = chunk.len();
-        //     // Copy over all data from buffer, leaving the data command byte intact
-        //     self.write_buf[1..=chunk_len].copy_from_slice(chunk);
-        //     self.i2cpio
-        //         .i2c_write_data(self.dev_addr, &self.write_buf[0..=chunk_len])
-        //         .await
-        // }
-        self.write_buf[1..=data.len()].copy_from_slice(&data[0..data.len()]);
+    pub async fn send_data(&mut self, data_bytes: &[u8]) {
         self.i2cpio
-            .i2c_write_data(self.dev_addr, &self.write_buf[0..=data.len()])
-            .await
-        //self.i2cpio.i2c_write_data(self.dev_addr, &data).await
-        // let _ = self
-        //     .i2c0
-        //     .blocking_write(self.dev_addr, &self.write_buf[..=data.len()]);
+            .i2c_write_byte_with_data(self.dev_addr, SSD1306_NCO_DATA, data_bytes)
+            .await;
     }
 
     // ------------------------------------------------------------------------
@@ -290,50 +246,50 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_contrast(&mut self, contrast: u8) {
         // -- 256 contrast steps, 0x7f RESET
-        let cmd = [SSD1306_SET_CONTRAST, contrast];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_CONTRAST, contrast];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn disable_entire_on(&mut self) {
-        let cmd = [SSD1306_SET_ENTIRE_ON_RAM];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_ENTIRE_ON_RAM];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn enable_entire_on_all(&mut self) {
-        let cmd = [SSD1306_SET_ENTIRE_ON_ALL];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_ENTIRE_ON_ALL];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_display_normal(&mut self) {
-        let cmd = [SSD1306_SET_DISP_NORM];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_NORM];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_display_inverted(&mut self) {
-        let cmd = [SSD1306_SET_DISP_INV];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_INV];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_display_off(&mut self) {
-        let cmd = [SSD1306_SET_DISP_OFF];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_OFF];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_display_on(&mut self) {
-        let cmd = [SSD1306_SET_DISP_ON];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_ON];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn nop(&mut self) {
-        let cmd = [SSD1306_NOP];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_NOP];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     // ------------------------------------------------------------------------
     // -- scrolling commands
     // ------------------------------------------------------------------------
 
-    // pub async fn set_continuous_horizontal_scroll(
+    // pub async fn template_for_commands(
     //     &mut self,
     // ) {
     //     let cmd = [];
@@ -341,13 +297,13 @@ impl<'d> SSD1306<'d> {
     // }
 
     pub async fn disable_scrolling(&mut self) {
-        let cmd = [SSD1306_SET_SCROLL_DISABLE];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_SCROLL_DISABLE];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn enable_scrolling(&mut self) {
-        let cmd = [SSD1306_SET_SCROLL_ENABLE];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_SCROLL_ENABLE];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     // ------------------------------------------------------------------------
@@ -356,17 +312,17 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_column_start_addr_for_page_mode(&mut self, start_addr: u8) {
         // -- lower nibble
-        let cmd = [SSD1306_SET_LO_COL_START_ADDR | (start_addr & 0xf)];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_LO_COL_START_ADDR | (start_addr & 0xf)];
+        self.send_cmd(&cmd_bytes).await;
         // -- higher nibble
-        let cmd = [SSD1306_SET_HI_COL_START_ADDR | (start_addr >> 4)];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_HI_COL_START_ADDR | (start_addr >> 4)];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_page_addr_start_for_page_mode(&mut self, start_addr: u8) {
         let start_addr = min(start_addr, ADDR_PAGE_MAX);
-        let cmd = [SSD1306_SET_PAGE_ADDR_START_PAGE_MODE | start_addr];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_PAGE_ADDR_START_PAGE_MODE | start_addr];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn cmd_set_mem_addr_mode(&mut self, mode: SSD1306MemoryAddressMode) {
@@ -376,22 +332,22 @@ impl<'d> SSD1306<'d> {
             SSD1306MemoryAddressMode::Vertical => MEMORY_ADDRESS_MODE_VERTICAL,
             SSD1306MemoryAddressMode::Page => MEMORY_ADDRESS_MODE_PAGE,
         };
-        let cmd = [SSD1306_SET_MEM_MODE, mode];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_MEM_MODE, mode];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_column_addr(&mut self, start_addr: u8, end_addr: u8) {
         let start_addr = min(start_addr, ADDR_COLUMN_MAX);
         let end_addr = min(end_addr, ADDR_COLUMN_MAX);
-        let cmd = [SSD1306_SET_COL_ADDR, start_addr, end_addr];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_COL_ADDR, start_addr, end_addr];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_page_addr(&mut self, start_addr: u8, end_addr: u8) {
         let start_addr = min(start_addr, ADDR_PAGE_MAX);
         let end_addr = min(end_addr, ADDR_PAGE_MAX);
-        let cmd = [SSD1306_SET_PAGE_ADDR, start_addr, end_addr];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_PAGE_ADDR, start_addr, end_addr];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     // ------------------------------------------------------------------------
@@ -400,14 +356,14 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_display_start_line(&mut self, start_line: u8) {
         let start_line = min(start_line, START_LINE_MAX);
-        let cmd = [SSD1306_SET_DISP_START_LINE | start_line];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_START_LINE | start_line];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_segment_remap(&mut self, remap: bool) {
         let remap = if remap { 1 } else { 0 };
-        let cmd = [SSD1306_SET_SEG_REMAP | remap];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_SEG_REMAP | remap];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_mux_ratio(&mut self, ratio: u8) {
@@ -418,23 +374,23 @@ impl<'d> SSD1306<'d> {
         } else {
             ratio
         };
-        let cmd = [SSD1306_SET_MUX_RATIO, ratio];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_MUX_RATIO, ratio];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_com_out_scan_dir(&mut self, remap: bool) {
-        let cmd = if remap {
+        let cmd_bytes = if remap {
             [SSD1306_SET_COM_OUT_SCAN_DIR_REMAPPED]
         } else {
             [SSD1306_SET_COM_OUT_SCAN_DIR_NORMAL]
         };
-        self.send_cmd(cmd).await;
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_display_offset(&mut self, offset: u8) {
         let offset = min(offset, DISPLAY_OFFSET_MAX);
-        let cmd = [SSD1306_SET_DISP_OFFSET, offset];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_OFFSET, offset];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_com_pin_cfg(&mut self, alternative_com_pin: bool, com_left_right_remap: bool) {
@@ -451,8 +407,8 @@ impl<'d> SSD1306<'d> {
                 COM_PIN_CFG_SEQ_NO_LR_REMAP
             }
         };
-        let cmd = [SSD1306_SET_COM_PIN_CFG, pin_cfg];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_COM_PIN_CFG, pin_cfg];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     // ------------------------------------------------------------------------
@@ -461,16 +417,16 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_disp_clk_div(&mut self, oscillator_frequency: u8, divide_ratio: u8) {
         let value = ((oscillator_frequency & 0xf) << 4) | (divide_ratio & 0xf);
-        let cmd = [SSD1306_SET_DISP_CLK_DIV, value];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_DISP_CLK_DIV, value];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_precharge(&mut self, phase1: u8, phase2: u8) {
         let phase1 = max(1, phase1 & 0xf);
         let phase2 = max(1, phase2 & 0xf);
         let value = (phase2 << 4) | (phase1 & 0xf);
-        let cmd = [SSD1306_SET_PRECHARGE, value];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_PRECHARGE, value];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn set_vcomh_deselect_level(&mut self, level: SSD1306VcomhDeselectLevel) {
@@ -480,18 +436,18 @@ impl<'d> SSD1306<'d> {
             SSD1306VcomhDeselectLevel::V083 => VCOMH_LEVEL_V083,
             SSD1306VcomhDeselectLevel::Auto => VCOMH_LEVEL_AUTO,
         };
-        let cmd = [SSD1306_SET_VCOM_DESEL, level];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_VCOM_DESEL, level];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn disable_charge_pump(&mut self) {
-        let cmd = [SSD1306_SET_CHARGE_PUMP, CHARGE_PUMP_DISABLE];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_CHARGE_PUMP, CHARGE_PUMP_DISABLE];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn enable_charge_pump(&mut self) {
-        let cmd = [SSD1306_SET_CHARGE_PUMP, CHARGE_PUMP_ENABLE];
-        self.send_cmd(cmd).await;
+        let cmd_bytes = [SSD1306_SET_CHARGE_PUMP, CHARGE_PUMP_ENABLE];
+        self.send_cmd(&cmd_bytes).await;
     }
 
     pub async fn init(&mut self) {
@@ -523,17 +479,6 @@ impl<'d> SSD1306<'d> {
 
     pub async fn render(&mut self, data: &[u8], area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
-        //self.send_data(data).await;
-        // let chunk_size = (area.end_col - area.start_col + 1) as usize;
-        // defmt::debug!(
-        //     "rendering area - start_col: {}, end_col: {}, start_page: {}, end_page: {}, data len {}, chunk size {}",
-        //     area.start_col,
-        //     area.end_col,
-        //     area.start_page,
-        //     area.end_page,
-        //     data.len(),
-        //     chunk_size,
-        // );
         for i in area.start_page..=area.end_page {
             //defmt::debug!("sending chunk {}", i);
             self.set_page_addr_start_for_page_mode(i).await;
@@ -541,12 +486,6 @@ impl<'d> SSD1306<'d> {
                 .await;
             let start_index = i as usize * 128 + area.start_col as usize;
             let end_index = i as usize * 128 + area.end_col as usize;
-            // defmt::debug!(
-            //     "sending chunk {}, start idx: {}, end idx: {}",
-            //     i,
-            //     start_index,
-            //     end_index
-            // );
             self.send_data(&data[start_index..=end_index]).await;
         }
     }
@@ -560,22 +499,9 @@ impl<'d> SSD1306<'d> {
     pub fn set_pixel(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
         let x = min(x, SSD1306_WIDTH);
         let y = min(y, SSD1306_HEIGHT);
-
-        // The calculation to determine the correct bit to set depends on which address
-        // mode we are in. This code assumes horizontal
-
-        // The video ram on the SSD1306 is split up in to 8 rows, one bit per pixel.
-        // Each row is 128 long by 8 pixels high, each byte vertically arranged, so byte 0 is x=0, y=0->7,
-        // byte 1 is x = 1, y=0->7 etc
-
-        // This code could be optimised, but is like this for clarity. The compiler
-        // should do a half decent job optimising it anyway.
-
-        let bytes_per_row = SSD1306_WIDTH as usize; // x pixels, 1bpp, but each row is 8 pixel high, so (x / 8) * 8
-
+        let bytes_per_row = SSD1306_WIDTH as usize;
         let byte_idx = (y as usize / 8) * bytes_per_row + x as usize;
         let mut byte = buf[byte_idx];
-
         if on {
             byte |= 1 << (y % 8);
         } else {
@@ -584,7 +510,6 @@ impl<'d> SSD1306<'d> {
         buf[byte_idx] = byte;
     }
 
-    // -- basic Bresenhams (I guess).
     pub fn draw_line(buf: &mut [u8; SSD1306_BUF_LEN], x0: u8, y0: u8, x1: u8, y1: u8, on: bool) {
         let mut x0 = x0 as i32;
         let x1 = x1 as i32;
