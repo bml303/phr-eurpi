@@ -18,6 +18,7 @@ use crate::audio::oscillator::sine_oscillator::SineOscillator;
 use crate::io::i2c::mpc4725::*;
 
 use super::{
+    ChannelFrequencyType,
     ChannelOscillatorType,
     SAMPLE_BLOCK_SIZE,
     SAMPLE_RATE_24KHZ,
@@ -133,15 +134,16 @@ pub async fn oscillator_irq1_handler(
     mut sm1: StateMachine<'static, PIO1, 1>,
     mut sm2: StateMachine<'static, PIO1, 2>,
     mut dma_ch: Option<DmaChannel<'static>>,
+    frequency_channel: &'static ChannelFrequencyType,
 ) {
     info!("oscillator_irq1_handler started");
     // -- setup oscillator
     let sample_rate = SAMPLE_RATE_48KHZ;
-    let frequency = 110.0;
+    //let frequency = 110.0;
     //let frequency = 440.0;
     //let frequency = 880.0;
-    //let frequency = 5000.0;
-    let f = frequency / sample_rate;
+    let frequency = 5000.0;
+    let mut f = frequency / sample_rate;
     let mut out = [0.0; SAMPLE_BLOCK_SIZE];
     let mut osc = SineOscillator::new();
     osc.init();
@@ -151,11 +153,26 @@ pub async fn oscillator_irq1_handler(
     //let mut ticker = Ticker::every(Duration::from_nanos(every_nanos));
     sm1.set_enable(true);
     sm2.set_enable(true);
+    osc.render(f, &mut out);
+    let mut sample_index = 0;
     loop {
         irq1.wait().await;
+        if frequency_channel.len() > 0 {
+            if let Ok(frequency) = frequency_channel.try_receive() {
+                defmt::debug!("Setting frequency {}", frequency);
+                f = frequency as f32 / sample_rate;
+                osc.init();
+                osc.render(f, &mut out);
+                sample_index = 0;
+            }
+        }
         // -- prepare sample
-        osc.render(f, &mut out);
-        let sample = ((out[0] + 1f32) * 4096f32 / 2f32) as u16;
+        let sample = ((out[sample_index] + 1f32) * 4096f32 / 2f32) as u16;
+        sample_index += 1;
+        if sample_index >= SAMPLE_BLOCK_SIZE {
+            osc.render(f, &mut out);
+            sample_index = 0;
+        }
         // -- prepare I2C message for MPC4725 I2C PIO: <no of bytes - addr - data byte 1 - data byte 2>
         // -- this is for cfg.shift_out.threshold = 8;
         // let no_of_bytes = 3u8;
@@ -187,7 +204,7 @@ pub async fn oscillator_irq1_handler(
         // let data_byte_2 = ((sample & 0xff) as u8);
         // let data_bytes = [data_byte_1, data_byte_2];
         // let _ = i2c1.blocking_write(dev_addr, &data_bytes);
-        yield_now().await;
+        //yield_now().await;
     }
 }
 

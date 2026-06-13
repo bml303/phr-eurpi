@@ -69,10 +69,10 @@ use io::{
     i2c::i2cpio::{I2CPIO, pio_task_sm0_irq0},
 };
 use tasks::{
-    ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT, I2C_BUS_FREQUENCY_100_KBIT,
-    I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task, oscillator_irq1_handler,
-    oscillator_irq2_handler, pio_task_sm3, setup_oscillator_clock_pio_task,
-    setup_oscillator_pio_task, setup_pio_task_sm3,
+    ChannelFrequencyType, ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT,
+    I2C_BUS_FREQUENCY_100_KBIT, I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task,
+    oscillator_irq1_handler, oscillator_irq2_handler, pio_task_sm3,
+    setup_oscillator_clock_pio_task, setup_oscillator_pio_task, setup_pio_task_sm3,
 };
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -82,7 +82,7 @@ static mut CORE1_STACK: Stack<4096> = Stack::new();
 static EXECUTOR_CORE0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR_CORE1: StaticCell<Executor> = StaticCell::new();
 // static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
-static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
+// static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
 // static EXECUTOR_LOW: StaticCell<Executor> = StaticCell::new();
 
 // static ANALOG_OUT_1: AtomicU8 = AtomicU8::new(0);
@@ -92,7 +92,9 @@ static EXECUTOR_MEDIUM: InterruptExecutor = InterruptExecutor::new();
 // static ANALOG_OUT_5: AtomicU8 = AtomicU8::new(0);
 // static ANALOG_OUT_6: AtomicU8 = AtomicU8::new(0);
 //
-static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<14>, 10> = Channel::new();
+//static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<14>, 10> = Channel::new();
+
+static FREQ_CHANNEL: ChannelFrequencyType = Channel::new();
 
 bind_interrupts!(
     struct IrqsAdcPioDma {
@@ -120,10 +122,10 @@ bind_interrupts!(struct IrqsI2c1 {
 //     unsafe { EXECUTOR_HIGH.on_interrupt() }
 // }
 
-#[interrupt]
-unsafe fn SWI_IRQ_5() {
-    unsafe { EXECUTOR_MEDIUM.on_interrupt() }
-}
+// #[interrupt]
+// unsafe fn SWI_IRQ_5() {
+//     unsafe { EXECUTOR_MEDIUM.on_interrupt() }
+// }
 
 // #[embassy_executor::task]
 // async fn run_low() {
@@ -360,6 +362,7 @@ fn main() -> ! {
                     //i2c0,
                     i2cpio,
                     //&DISPLAY_CHANNEL,
+                    &FREQ_CHANNEL,
                 )));
                 // -- display
                 spawner_c1.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
@@ -372,19 +375,19 @@ fn main() -> ! {
     // -- ---------------------------------------------------------------------
     // -- Medium-priority executor: SWI_IRQ_5, priority level 3
     // -- ---------------------------------------------------------------------
-    interrupt::SWI_IRQ_5.set_priority(Priority::P3);
-    let spawner_m = EXECUTOR_MEDIUM.start(interrupt::SWI_IRQ_5);
-    // -- digital input
-    spawner_m.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
-    // -- oscillator
-    spawner_m.spawn(unwrap!(oscillator_irq2_handler(irq2)));
-    spawner_m.spawn(unwrap!(oscillator_irq1_handler(
-        //i2c1,
-        irq1,
-        sm1,
-        sm2,
-        Some(dma_ch2)
-    )));
+    // interrupt::SWI_IRQ_5.set_priority(Priority::P3);
+    // let spawner_m = EXECUTOR_MEDIUM.start(interrupt::SWI_IRQ_5);
+    // // -- digital input
+    // spawner_m.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+    // // -- oscillator
+    // spawner_m.spawn(unwrap!(oscillator_irq2_handler(irq2)));
+    // spawner_m.spawn(unwrap!(oscillator_irq1_handler(
+    //     //i2c1,
+    //     irq1,
+    //     sm1,
+    //     sm2,
+    //     Some(dma_ch2)
+    // )));
 
     // -- ---------------------------------------------------------------------
     // -- Core 0 task
@@ -442,30 +445,20 @@ fn main() -> ! {
     //     // spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
     // });
 
-    let executor0 = EXECUTOR_CORE0.init(Executor::new());
-    executor0.run(|spawner_lo| {});
-
     // -- spawn other tasks on core 0
-    // let executor0 = EXECUTOR_CORE0.init(Executor::new());
-    // executor0.run(|spawner| {
-    //     spawner.spawn(unwrap!(inputs_task(
-    //         adc,
-    //         adc_ch_ain,
-    //         adc_ch_kn1,
-    //         adc_ch_kn2,
-    //         //dma_ch10,
-    //         btn1,
-    //         btn2,
-    //         analog_out_1,
-    //         analog_out_2,
-    //         analog_out_3,
-    //         analog_out_4,
-    //         analog_out_5,
-    //         analog_out_6,
-    //         &DISPLAY_CHANNEL,
-    //     )));
-    //     // -- display
-    //     spawner.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
-    //     spawner.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
-    // });
+    let executor0 = EXECUTOR_CORE0.init(Executor::new());
+    executor0.run(|spawner_c0| {
+        // -- digital input
+        spawner_c0.spawn(unwrap!(pio_task_sm3(irq3, sm3)));
+        // -- oscillator
+        spawner_c0.spawn(unwrap!(oscillator_irq2_handler(irq2)));
+        spawner_c0.spawn(unwrap!(oscillator_irq1_handler(
+            //i2c1,
+            irq1,
+            sm1,
+            sm2,
+            Some(dma_ch2),
+            &FREQ_CHANNEL,
+        )));
+    });
 }

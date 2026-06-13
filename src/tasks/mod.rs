@@ -32,8 +32,8 @@ pub const PWM_VALUE_MAX: u8 = 100;
 pub const PWM_VALUE_MIN: u8 = 0;
 pub const PWM_VALUE_CYCLE_MAX: u8 = PWM_VALUE_MAX / PWM_TX_FIFO_VALUES;
 
-pub const SAMPLE_BLOCK_SIZE: usize = 48;
-//const SAMPLE_BLOCK_SIZE: usize = 24;
+//pub const SAMPLE_BLOCK_SIZE: usize = 48;
+const SAMPLE_BLOCK_SIZE: usize = 24;
 // const SAMPLE_RATE_44KHZ: f32 = 44000.0;
 const SAMPLE_RATE_24KHZ: f32 = 24000.0;
 // const SAMPLE_RATE_25KHZ: f32 = 25000.0;
@@ -53,3 +53,5 @@ pub type ChannelOscillatorType =
     Channel<CriticalSectionRawMutex, [u16; SAMPLE_BLOCK_SIZE], SAMPLE_BLOCK_SIZE>;
 
 pub type ChannelInputsType = Channel<CriticalSectionRawMutex, (u16, u16, u16, Level, Level), 10>;
+
+pub type ChannelFrequencyType = Channel<CriticalSectionRawMutex, u16, 1>;

@@ -20,7 +20,7 @@ use crate::{
     utils,
 };
 
-use super::{ChannelInputsType, PWM_VALUE_MAX};
+use super::{ChannelFrequencyType, ChannelInputsType, PWM_VALUE_MAX};
 
 // struct FormatBuf {
 //     buf: [u8; 64],
@@ -136,6 +136,7 @@ pub async fn inputs_task(
     //i2c0: I2c<'static, I2C0, I2cAsync>,
     i2cpio: I2CPIO<'static>,
     //display_channel: &'static Channel<CriticalSectionRawMutex, String<14>, 10>,
+    frequency_channel: &'static ChannelFrequencyType,
 ) {
     // -- perpare display
     let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
@@ -153,6 +154,8 @@ pub async fn inputs_task(
     SSD1306::draw_line(&mut display_buf, 0, 0, 0, 31, true);
     SSD1306::draw_line(&mut display_buf, 0, 31, 127, 31, true);
     SSD1306::draw_line(&mut display_buf, 127, 0, 127, 31, true);
+    SSD1306::write_string(&mut display_buf, 8, 8, "This gugus");
+    SSD1306::write_string(&mut display_buf, 8, 16, "  is happening");
     ssd1306.render(&display_buf, &frame_area).await;
 
     //let _ = display.write_char('A');
@@ -177,10 +180,6 @@ pub async fn inputs_task(
         // let kn1_val = adc_buf[1];
         // let kn2_val = adc_buf[2];
 
-        // -- read button status
-        let btn1_lvl = btn1.level();
-        //defmt::debug!("level change");
-
         let ain_val = adc.blocking_read(&mut adc_ch_ain).unwrap();
         let kn1_val = adc.blocking_read(&mut adc_ch_kn1).unwrap();
         let kn2_val = adc.blocking_read(&mut adc_ch_kn2).unwrap();
@@ -191,28 +190,34 @@ pub async fn inputs_task(
         analog_out_1.set_duty_cycle_percent(out1_percent);
         analog_out_2.set_duty_cycle_percent(out2_percent);
 
-        //if btn1_lvl == Level::Low {
+        // -- read button status
+        let btn1_lvl = btn1.level();
         let btn2_lvl = btn2.level();
 
-        // -- update display
-        let kn1_val = 4096 - kn1_val;
-        let kn2_val = 4096 - kn2_val;
-        // -- update display
-        let mut status_string: String<14> = String::new();
-        let ain_hexstr = utils::u16_to_hexstring(ain_val);
-        let _ = status_string.push_str(&ain_hexstr);
-        let _ = match btn1_lvl {
-            Level::High => status_string.push_str("+"),
-            Level::Low => status_string.push_str("-"),
-        };
-        let kn1_hexstr = utils::u16_to_hexstring(kn1_val);
-        let _ = status_string.push_str(&kn1_hexstr);
-        let _ = match btn2_lvl {
-            Level::High => status_string.push_str("+"),
-            Level::Low => status_string.push_str("-"),
-        };
-        let kn2_hexstr = utils::u16_to_hexstring(kn2_val);
-        let _ = status_string.push_str(&kn2_hexstr);
+        if btn1_lvl == Level::Low {
+            let kn1_val = 4096 - kn1_val;
+            let _ = frequency_channel.try_send(kn1_val);
+        }
+
+        // // -- update display
+        // let kn1_val = 4096 - kn1_val;
+        // let kn2_val = 4096 - kn2_val;
+        // // -- update display
+        // let mut status_string: String<14> = String::new();
+        // let ain_hexstr = utils::u16_to_hexstring(ain_val);
+        // let _ = status_string.push_str(&ain_hexstr);
+        // let _ = match btn1_lvl {
+        //     Level::High => status_string.push_str("+"),
+        //     Level::Low => status_string.push_str("-"),
+        // };
+        // let kn1_hexstr = utils::u16_to_hexstring(kn1_val);
+        // let _ = status_string.push_str(&kn1_hexstr);
+        // let _ = match btn2_lvl {
+        //     Level::High => status_string.push_str("+"),
+        //     Level::Low => status_string.push_str("-"),
+        // };
+        // let kn2_hexstr = utils::u16_to_hexstring(kn2_val);
+        // let _ = status_string.push_str(&kn2_hexstr);
 
         // -- update display
         // let _ = display.set_position(0, 0);
@@ -220,10 +225,10 @@ pub async fn inputs_task(
         //     //let _ = display.write_char(ch);
         //     let _ = display.print_char(ch);
         // }
-        frame_area.set_pages(1, 2);
-        SSD1306::write_string(&mut display_buf, 8, 8, "01234567890");
-        SSD1306::write_string(&mut display_buf, 8, 16, &status_string);
-        ssd1306.render(&display_buf, &frame_area).await;
+        // frame_area.set_pages(1, 2);
+        // SSD1306::write_string(&mut display_buf, 8, 8, "01234567890");
+        // SSD1306::write_string(&mut display_buf, 8, 16, &status_string);
+        // ssd1306.render(&display_buf, &frame_area).await;
 
         //let _ = display_channel.try_send(status_string);
         //display_channel.send(status_string).await;
