@@ -100,6 +100,14 @@ pub async fn init_display(
         ssd1306.set_display_off().await; // -- switch display on
         Timer::after(delay_dur).await;
     }
+    ssd1306
+        .cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Page)
+        .await;
+    ssd1306.set_column_addr(0, 127).await;
+    ssd1306.set_page_addr(0, 3).await;
+    ssd1306.set_column_start_addr_for_page_mode(0).await;
+    ssd1306.set_page_addr_start_for_page_mode(0).await;
+    ssd1306.disable_scrolling().await;
     ssd1306.disable_entire_on().await; // -- go back to following RAM for pixel state
     ssd1306.set_display_on().await; // -- switch display on
     ssd1306
@@ -133,9 +141,17 @@ pub async fn inputs_task(
     let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
     let mut ssd1306 = init_display(i2cpio).await;
     ssd1306.clear_display(&display_buf).await;
-    let frame_area = SSD1306RenderArea::new();
+    let mut frame_area = SSD1306RenderArea::new();
     // frame_area.set_columns(0, 127);
-    // frame_area.set_pages(0, 1);
+    frame_area.set_pages(1, 2);
+    //SSD1306::write_string(&mut display_buf, 0, 0, "01234567890");
+    //SSD1306::set_pixel(&mut display_buf, 0, 0, true);
+    // display_buf[0] = 0xff;
+    // display_buf[128 + 3] = 0xff;
+    // display_buf[256 + 5] = 0xff;
+    // display_buf[384 + 7] = 0xff;
+    ssd1306.render(&display_buf, &frame_area).await;
+
     //let _ = display.write_char('A');
     //let _ = display.clear();
     // -- prepare analog out values
@@ -201,7 +217,8 @@ pub async fn inputs_task(
         //     //let _ = display.write_char(ch);
         //     let _ = display.print_char(ch);
         // }
-        SSD1306::write_string(&mut display_buf, 0, 8, &status_string);
+        SSD1306::write_string(&mut display_buf, 0, 8, "01234567890");
+        SSD1306::write_string(&mut display_buf, 0, 16, &status_string);
         ssd1306.render(&display_buf, &frame_area).await;
         //}
 

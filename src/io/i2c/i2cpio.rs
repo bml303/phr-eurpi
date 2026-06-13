@@ -99,8 +99,8 @@ impl<'d> I2CPIO<'d> {
         cfg.set_set_pins(&[&sda_pio_pin]);
         cfg.set_out_pins(&[&sda_pio_pin]);
         cfg.set_jmp_pin(&sda_pio_pin);
-        cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kH
-        //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
+        //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kH
+        cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ); // -- bus speed 1 MHz
         cfg.out_sticky = true;
         cfg.shift_out.auto_fill = true;
         cfg.shift_out.direction = ShiftDirection::Left;

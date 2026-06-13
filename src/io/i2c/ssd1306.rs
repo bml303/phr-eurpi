@@ -256,24 +256,7 @@ impl<'d> SSD1306<'d> {
         self.write_buf[0] = SSD1306_NCO_COMMAND;
         self.write_buf[1..=cmd.len()].copy_from_slice(&cmd[0..cmd.len()]);
         self.i2cpio
-            .i2c_write_data(self.dev_addr, &self.write_buf)
-            .await;
-        // let _ = self
-        //     .i2c0
-        //     .blocking_write(self.dev_addr, &self.write_buf[..=cmd.len()]);
-    }
-
-    pub async fn send_cmds<const LEN: usize>(&mut self, cmd: [u8; LEN]) {
-        // -- I2C write process expects a control byte followed by data
-        // --this "data" can be a command or data to follow up a command
-        // -- Co = 1, D/C = 0 => the driver expects a command
-        // self.i2cpio
-        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_NCO_COMMAND, &cmd)
-        //     .await;
-        self.write_buf[0] = SSD1306_CO_COMMAND;
-        self.write_buf[1..=cmd.len()].copy_from_slice(&cmd[0..cmd.len()]);
-        self.i2cpio
-            .i2c_write_data(self.dev_addr, &self.write_buf)
+            .i2c_write_data(self.dev_addr, &self.write_buf[0..=cmd.len()])
             .await;
         // let _ = self
         //     .i2c0
@@ -282,10 +265,20 @@ impl<'d> SSD1306<'d> {
 
     pub async fn send_data(&mut self, data: &[u8]) {
         self.write_buf[0] = SSD1306_NCO_DATA;
+        //let chuncks = data.chunks(16);
+        // for chunk in chuncks {
+        //     let chunk_len = chunk.len();
+        //     // Copy over all data from buffer, leaving the data command byte intact
+        //     self.write_buf[1..=chunk_len].copy_from_slice(chunk);
+        //     self.i2cpio
+        //         .i2c_write_data(self.dev_addr, &self.write_buf[0..=chunk_len])
+        //         .await
+        // }
         self.write_buf[1..=data.len()].copy_from_slice(&data[0..data.len()]);
         self.i2cpio
-            .i2c_write_data(self.dev_addr, &self.write_buf)
+            .i2c_write_data(self.dev_addr, &self.write_buf[0..=data.len()])
             .await
+        //self.i2cpio.i2c_write_data(self.dev_addr, &data).await
         // let _ = self
         //     .i2c0
         //     .blocking_write(self.dev_addr, &self.write_buf[..=data.len()]);
@@ -502,46 +495,6 @@ impl<'d> SSD1306<'d> {
     }
 
     pub async fn init(&mut self) {
-        // self.nop().await;
-        // self.nop().await;
-        // let init_cmds = [
-        //     SSD1306_SET_DISP_OFF,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_MUX_RATIO,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_HEIGHT - 1,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_DISP_OFFSET,
-        //     0,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_DISP_START_LINE | 0,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_SEG_REMAP | 1,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_COM_OUT_SCAN_DIR_REMAPPED,
-        //     COM_PIN_CFG_SEQ_NO_LR_REMAP,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_CONTRAST,
-        //     CONTRAST_DEFAULT,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_ENTIRE_ON_RAM,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_DISP_NORM,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_DISP_CLK_DIV,
-        //     OSCILLATOR_FREQUENCY_DEFAULT << 4 | DIVIDE_RATIO_DEFAULT,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_MEM_MODE,
-        //     MEMORY_ADDRESS_MODE_PAGE,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_SCROLL_DISABLE,
-        //     SSD1306_CO_COMMAND,
-        //     SSD1306_SET_CHARGE_PUMP,
-        //     CHARGE_PUMP_ENABLE,
-        //     SSD1306_NCO_COMMAND,
-        //     SSD1306_SET_DISP_ON,
-        // ];
-        // self.send_cmds(init_cmds).await;
         self.nop().await;
         self.nop().await;
         self.set_display_off().await;
@@ -552,7 +505,7 @@ impl<'d> SSD1306<'d> {
         self.set_com_out_scan_dir(true).await;
         self.set_com_pin_cfg(false, false).await;
         self.set_contrast(CONTRAST_DEFAULT).await;
-        // self.set_precharge(2, 2).await;
+        // self.set_precharge(PHASE1_DEFAULT, PHASE2_DEFAULT).await;
         // self.set_vcomh_deselect_level(SSD1306VcomhDeselectLevel::Auto)
         //     .await;
         self.disable_entire_on().await;
@@ -570,12 +523,10 @@ impl<'d> SSD1306<'d> {
 
     pub async fn render(&mut self, data: &[u8], area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
-        self.set_column_start_addr_for_page_mode(area.start_col)
-            .await;
-        let chunk_size = (area.end_col - area.start_col + 1) as usize;
-        let mut chuncks = data.chunks(chunk_size);
+        //self.send_data(data).await;
+        // let chunk_size = (area.end_col - area.start_col + 1) as usize;
         // defmt::debug!(
-        //     "rendering area {} {} {} {}, data len {}, chunk size {}",
+        //     "rendering area - start_col: {}, end_col: {}, start_page: {}, end_page: {}, data len {}, chunk size {}",
         //     area.start_col,
         //     area.end_col,
         //     area.start_page,
@@ -584,10 +535,19 @@ impl<'d> SSD1306<'d> {
         //     chunk_size,
         // );
         for i in area.start_page..=area.end_page {
-            if let Some(chunk) = chuncks.nth(0) {
-                self.set_page_addr_start_for_page_mode(i).await;
-                self.send_data(chunk).await;
-            }
+            //defmt::debug!("sending chunk {}", i);
+            self.set_page_addr_start_for_page_mode(i).await;
+            self.set_column_start_addr_for_page_mode(area.start_col)
+                .await;
+            let start_index = i as usize * 128 + area.start_col as usize;
+            let end_index = i as usize * 128 + area.end_col as usize;
+            // defmt::debug!(
+            //     "sending chunk {}, start idx: {}, end idx: {}",
+            //     i,
+            //     start_index,
+            //     end_index
+            // );
+            self.send_data(&data[start_index..=end_index]).await;
         }
     }
 
@@ -682,7 +642,7 @@ impl<'d> SSD1306<'d> {
             ch
         };
         let idx = Self::get_font_index(ch);
-        let mut fb_idx = (y * 128 + x) as usize;
+        let mut fb_idx = y as usize * 128 + x as usize;
         for i in 0..8 {
             buf[fb_idx] = FONT[idx * 8 + i];
             fb_idx += 1;
