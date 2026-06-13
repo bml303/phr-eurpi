@@ -584,19 +584,18 @@ impl<'d> SSD1306<'d> {
         buf[byte_idx] = byte;
     }
 
-    // -- basic Bresenhams.
+    // -- basic Bresenhams (I guess).
     pub fn draw_line(buf: &mut [u8; SSD1306_BUF_LEN], x0: u8, y0: u8, x1: u8, y1: u8, on: bool) {
-        let sx: i16 = if x0 < x1 { 1 } else { -1 };
-        let dx = if sx > 0 { x1 - x0 } else { x0 - x1 };
-        let sy: i16 = if y0 < y1 { 1 } else { -1 };
-        let dy = if sy > 0 { y0 - y1 } else { y1 - y0 };
-        let mut x0 = x0 as i16;
-        let mut y0 = y0 as i16;
-        let x1 = x1 as i16;
-        let y1 = y1 as i16;
+        let mut x0 = x0 as i32;
+        let x1 = x1 as i32;
+        let mut y0 = y0 as i32;
+        let y1 = y1 as i32;
+        let dx = (x1 - x0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let dy = -(y1 - y0).abs();
+        let sy = if y0 < y1 { 1 } else { -1 };
         let mut err = dx + dy;
-        let mut e2;
-
+        let mut e2: i32;
         loop {
             Self::set_pixel(buf, x0 as u8, y0 as u8, on);
             if x0 == x1 && y0 == y1 {

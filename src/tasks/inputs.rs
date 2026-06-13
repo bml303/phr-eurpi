@@ -143,13 +143,16 @@ pub async fn inputs_task(
     ssd1306.clear_display(&display_buf).await;
     let mut frame_area = SSD1306RenderArea::new();
     // frame_area.set_columns(0, 127);
-    frame_area.set_pages(1, 2);
     //SSD1306::write_string(&mut display_buf, 0, 0, "01234567890");
     //SSD1306::set_pixel(&mut display_buf, 0, 0, true);
     // display_buf[0] = 0xff;
     // display_buf[128 + 3] = 0xff;
     // display_buf[256 + 5] = 0xff;
     // display_buf[384 + 7] = 0xff;
+    SSD1306::draw_line(&mut display_buf, 0, 0, 127, 0, true);
+    SSD1306::draw_line(&mut display_buf, 0, 0, 0, 31, true);
+    SSD1306::draw_line(&mut display_buf, 0, 31, 127, 31, true);
+    SSD1306::draw_line(&mut display_buf, 127, 0, 127, 31, true);
     ssd1306.render(&display_buf, &frame_area).await;
 
     //let _ = display.write_char('A');
@@ -217,10 +220,10 @@ pub async fn inputs_task(
         //     //let _ = display.write_char(ch);
         //     let _ = display.print_char(ch);
         // }
-        SSD1306::write_string(&mut display_buf, 0, 8, "01234567890");
-        SSD1306::write_string(&mut display_buf, 0, 16, &status_string);
+        frame_area.set_pages(1, 2);
+        SSD1306::write_string(&mut display_buf, 8, 8, "01234567890");
+        SSD1306::write_string(&mut display_buf, 8, 16, &status_string);
         ssd1306.render(&display_buf, &frame_area).await;
-        //}
 
         //let _ = display_channel.try_send(status_string);
         //display_channel.send(status_string).await;
