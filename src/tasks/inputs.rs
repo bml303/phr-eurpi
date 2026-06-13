@@ -1,16 +1,22 @@
+use core::fmt::Write;
+
 //use defmt::*;
 use embassy_futures::yield_now;
 use embassy_rp::{
     adc::{Adc, Async as AdcAsync, Channel as AdcChannel},
     dma::Channel as DmaChannel,
     gpio::Level,
+    i2c::{self, Async as I2cAsync, Config as I2cConfig, I2c},
+    peripherals::I2C0,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use heapless::String;
+use ssd1306::{I2CDisplayInterface, Ssd1306, mode::TerminalMode, prelude::*};
 
 use crate::{
     controls::{AnalogOutput, Debouncer},
+    io::i2c::{i2cpio::I2CPIO, ssd1306::*},
     utils,
 };
 
@@ -77,6 +83,27 @@ use super::{ChannelInputsType, PWM_VALUE_MAX};
 //         }
 //     }
 // }
+//
+pub async fn init_display(
+    i2cpio: I2CPIO<'static>,
+    //i2c0: I2c<'static, I2C0, I2cAsync>,
+) -> SSD1306<'static> {
+    let mut ssd1306 = SSD1306::new(i2cpio, SSD1306Addr::Default);
+    ssd1306.init().await;
+    ssd1306.set_display_off().await; // -- switch display off
+    ssd1306.enable_entire_on_all().await; // -- set all pixels on
+    // ssd1306.set_display_on().await;
+    let delay_dur = Duration::from_millis(500);
+    for _i in 0..3 {
+        ssd1306.set_display_on().await; // -- switch display off
+        Timer::after(delay_dur).await;
+        ssd1306.set_display_off().await; // -- switch display on
+        Timer::after(delay_dur).await;
+    }
+    ssd1306.disable_entire_on().await; // -- go back to following RAM for pixel state
+    ssd1306.set_display_on().await; // -- switch display on
+    ssd1306
+}
 
 #[embassy_executor::task]
 pub async fn inputs_task(
@@ -93,8 +120,24 @@ pub async fn inputs_task(
     mut analog_out_4: AnalogOutput<'static>,
     mut analog_out_5: AnalogOutput<'static>,
     mut analog_out_6: AnalogOutput<'static>,
-    display_channel: &'static Channel<CriticalSectionRawMutex, String<14>, 10>,
+    // mut display: Ssd1306<
+    //     I2CInterface<I2c<'static, I2C0, I2cAsync>>,
+    //     DisplaySize128x32,
+    //     TerminalMode,
+    // >,
+    //i2c0: I2c<'static, I2C0, I2cAsync>,
+    i2cpio: I2CPIO<'static>,
+    //display_channel: &'static Channel<CriticalSectionRawMutex, String<14>, 10>,
 ) {
+    // -- perpare display
+    let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
+    let mut ssd1306 = init_display(i2cpio).await;
+    ssd1306.clear_display(&display_buf).await;
+    let frame_area = SSD1306RenderArea::new();
+    // frame_area.set_columns(0, 127);
+    // frame_area.set_pages(0, 1);
+    //let _ = display.write_char('A');
+    //let _ = display.clear();
     // -- prepare analog out values
     analog_out_1.set_duty_cycle_percent(0);
     analog_out_2.set_duty_cycle_percent(0);
@@ -115,6 +158,10 @@ pub async fn inputs_task(
         // let kn1_val = adc_buf[1];
         // let kn2_val = adc_buf[2];
 
+        // -- read button status
+        let btn1_lvl = btn1.level();
+        //defmt::debug!("level change");
+
         let ain_val = adc.blocking_read(&mut adc_ch_ain).unwrap();
         let kn1_val = adc.blocking_read(&mut adc_ch_kn1).unwrap();
         let kn2_val = adc.blocking_read(&mut adc_ch_kn2).unwrap();
@@ -124,9 +171,10 @@ pub async fn inputs_task(
         // -- update out1 and out2
         analog_out_1.set_duty_cycle_percent(out1_percent);
         analog_out_2.set_duty_cycle_percent(out2_percent);
-        // -- read button status
-        let btn1_lvl = btn1.level();
+
+        //if btn1_lvl == Level::Low {
         let btn2_lvl = btn2.level();
+
         // -- update display
         let kn1_val = 4096 - kn1_val;
         let kn2_val = 4096 - kn2_val;
@@ -147,7 +195,17 @@ pub async fn inputs_task(
         let kn2_hexstr = utils::u16_to_hexstring(kn2_val);
         let _ = status_string.push_str(&kn2_hexstr);
 
-        let _ = display_channel.try_send(status_string);
+        // -- update display
+        // let _ = display.set_position(0, 0);
+        // for ch in status_string.chars() {
+        //     //let _ = display.write_char(ch);
+        //     let _ = display.print_char(ch);
+        // }
+        SSD1306::write_string(&mut display_buf, 0, 8, &status_string);
+        ssd1306.render(&display_buf, &frame_area).await;
+        //}
+
+        //let _ = display_channel.try_send(status_string);
         //display_channel.send(status_string).await;
 
         // let _ = display.clear(BinaryColor::Off);

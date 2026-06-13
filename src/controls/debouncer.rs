@@ -29,4 +29,9 @@ impl<'a> Debouncer<'a> {
     pub fn level(&mut self) -> Level {
         self.input.get_level()
     }
+
+    pub async fn wait_for_level_change(&mut self) -> Level {
+        self.input.wait_for_any_edge().await;
+        self.input.get_level()
+    }
 }

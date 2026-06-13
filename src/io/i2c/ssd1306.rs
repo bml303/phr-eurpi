@@ -1,5 +1,6 @@
 use core::cmp::{max, min};
 
+use embassy_futures::yield_now;
 use embassy_rp::{
     Peri,
     dma::Channel as DmaChannel,
@@ -30,11 +31,13 @@ const SSD1306_I2C_ADDR_SECONDARY: u8 = SSD1306_I2C_ADDR_DEFAULT + 1;
 const SSD1306_I2C_CLK: usize = 1000;
 
 // -- control byte
-const SSD1306_CONTROL_COMMAND: u8 = 0x80;
-const SSD1306_CONTROL_DATA: u8 = 0x40;
+const SSD1306_NCO_COMMAND: u8 = 0x00;
+const SSD1306_NCO_DATA: u8 = 0x40;
+const SSD1306_CO_COMMAND: u8 = 0x00;
 
 // commands (see datasheet)
-const SSD1306_SET_HIGH_COL_START_ADDR: u8 = 0x10;
+const SSD1306_SET_LO_COL_START_ADDR: u8 = 0x10;
+const SSD1306_SET_HI_COL_START_ADDR: u8 = 0x10;
 const SSD1306_SET_MEM_MODE: u8 = 0x20;
 const SSD1306_SET_COL_ADDR: u8 = 0x21;
 const SSD1306_SET_PAGE_ADDR: u8 = 0x22;
@@ -94,11 +97,15 @@ const MUX_RATIO_MAX: u8 = 63;
 const PHASE1_DEFAULT: u8 = 0x02;
 const PHASE2_DEFAULT: u8 = 0x02;
 
-const START_LINE_MAX: u8 = 64;
+const START_LINE_MAX: u8 = 63;
 const VCOMH_LEVEL_V065: u8 = 0x00;
 const VCOMH_LEVEL_V077: u8 = 0x20;
 const VCOMH_LEVEL_V083: u8 = 0x30;
 const VCOMH_LEVEL_AUTO: u8 = 0x40;
+
+const WRITE_BUF_LEN: usize = 129;
+
+// -- fonts
 
 const ASCII_A: u8 = 65;
 const ASCII_Z: u8 = 90;
@@ -106,8 +113,12 @@ const ASCII_0: u8 = 48;
 const ASCII_9: u8 = 57;
 const ASCII_A_LOWER: u8 = 97;
 const ASCII_Z_LOWER: u8 = 122;
+const ASCII_PLUS: u8 = 43;
+const ASCII_MINUS: u8 = 45;
 
-static FONT: [u8; 296] = [
+// -- vertical bitmaps, A-Z, 0-9. Each is 8 pixels high and wide
+// -- these are defined vertically to make them quick to copy to FB
+static FONT: [u8; 312] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // nothing / space
     0x78, 0x14, 0x12, 0x11, 0x12, 0x14, 0x78, 0x00, //A
     0x7f, 0x49, 0x49, 0x49, 0x49, 0x49, 0x7f, 0x00, //B
@@ -145,6 +156,8 @@ static FONT: [u8; 296] = [
     0x01, 0x01, 0x01, 0x61, 0x31, 0x0d, 0x03, 0x00, //7
     0x36, 0x49, 0x49, 0x49, 0x49, 0x49, 0x36, 0x00, //8
     0x06, 0x09, 0x09, 0x09, 0x09, 0x09, 0x7f, 0x00, //9
+    0x00, 0x08, 0x08, 0x3e, 0x08, 0x08, 0x00, 0x00, //+
+    0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, //-
 ];
 
 pub enum SSD1306MemoryAddressMode {
@@ -165,7 +178,6 @@ pub struct SSD1306RenderArea {
     end_col: u8,
     start_page: u8,
     end_page: u8,
-    buflen: usize,
 }
 
 impl SSD1306RenderArea {
@@ -174,19 +186,22 @@ impl SSD1306RenderArea {
         let end_col: u8 = SSD1306_WIDTH - 1;
         let start_page: u8 = 0;
         let end_page: u8 = SSD1306_NUM_PAGES - 1;
-        let buflen = Self::calc_render_area_buflen(start_col, end_col, start_page, end_page);
         Self {
             start_col,
             end_col,
             start_page,
             end_page,
-            buflen,
         }
     }
 
-    fn calc_render_area_buflen(start_col: u8, end_col: u8, start_page: u8, end_page: u8) -> usize {
-        // -- calculate how long the flattened buffer will be for a render area
-        (end_col - start_col + 1) as usize * (end_page - start_page + 1) as usize
+    pub fn set_columns(&mut self, start_col: u8, end_col: u8) {
+        self.start_col = start_col;
+        self.end_col = end_col;
+    }
+
+    pub fn set_pages(&mut self, start_page: u8, end_page: u8) {
+        self.start_page = start_page;
+        self.end_page = end_page;
     }
 }
 
@@ -195,9 +210,15 @@ pub enum SSD1306Addr {
     Secondary,
 }
 
+// enum SSD1306Command {
+
+// }
+
 pub struct SSD1306<'d> {
     i2cpio: I2CPIO<'d>,
+    //i2c0: I2c<'d, I2C0, I2cAsync>,
     dev_addr: u8,
+    write_buf: [u8; WRITE_BUF_LEN],
 }
 
 impl<'d> SSD1306<'d> {
@@ -206,34 +227,68 @@ impl<'d> SSD1306<'d> {
             SSD1306Addr::Default => SSD1306_I2C_ADDR_DEFAULT,
             SSD1306Addr::Secondary => SSD1306_I2C_ADDR_SECONDARY,
         };
-        Self { i2cpio, dev_addr }
+        Self {
+            i2cpio,
+            dev_addr,
+            write_buf: [0; WRITE_BUF_LEN],
+        }
     }
+
+    // pub fn new(i2c0: I2c<'d, I2C0, I2cAsync>, addr: SSD1306Addr) -> Self {
+    //     let dev_addr = match addr {
+    //         SSD1306Addr::Default => SSD1306_I2C_ADDR_DEFAULT,
+    //         SSD1306Addr::Secondary => SSD1306_I2C_ADDR_SECONDARY,
+    //     };
+    //     Self {
+    //         i2c0,
+    //         dev_addr,
+    //         write_buf: [0; WRITE_BUF_LEN],
+    //     }
+    // }
 
     pub async fn send_cmd<const LEN: usize>(&mut self, cmd: [u8; LEN]) {
         // -- I2C write process expects a control byte followed by data
         // --this "data" can be a command or data to follow up a command
         // -- Co = 1, D/C = 0 => the driver expects a command
-        //i2c_write_two_bytes(, self.dev_addr, SSD1306_CONTROL_COMMAND, cmd).await;
+        // self.i2cpio
+        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_NCO_COMMAND, &cmd)
+        //     .await;
+        self.write_buf[0] = SSD1306_NCO_COMMAND;
+        self.write_buf[1..=cmd.len()].copy_from_slice(&cmd[0..cmd.len()]);
         self.i2cpio
-            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_COMMAND, &cmd)
+            .i2c_write_data(self.dev_addr, &self.write_buf)
             .await;
+        // let _ = self
+        //     .i2c0
+        //     .blocking_write(self.dev_addr, &self.write_buf[..=cmd.len()]);
+    }
+
+    pub async fn send_cmds<const LEN: usize>(&mut self, cmd: [u8; LEN]) {
+        // -- I2C write process expects a control byte followed by data
+        // --this "data" can be a command or data to follow up a command
+        // -- Co = 1, D/C = 0 => the driver expects a command
+        // self.i2cpio
+        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_NCO_COMMAND, &cmd)
+        //     .await;
+        self.write_buf[0] = SSD1306_CO_COMMAND;
+        self.write_buf[1..=cmd.len()].copy_from_slice(&cmd[0..cmd.len()]);
+        self.i2cpio
+            .i2c_write_data(self.dev_addr, &self.write_buf)
+            .await;
+        // let _ = self
+        //     .i2c0
+        //     .blocking_write(self.dev_addr, &self.write_buf[..=cmd.len()]);
     }
 
     pub async fn send_data(&mut self, data: &[u8]) {
-        // -- in horizontal addressing mode, the column address pointer auto-increments
-        // -- and then wraps around to the next page, so we can send the entire frame
-        // -- buffer in one gooooooo!
-        // for i in 0..data.len() {
-
-        // }
-        //defmt::debug!("Sending data {:?}", data);
+        self.write_buf[0] = SSD1306_NCO_DATA;
+        self.write_buf[1..=data.len()].copy_from_slice(&data[0..data.len()]);
         self.i2cpio
-            .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
-            .await;
-
-        // self.i2cpio
-        //     .i2c_write_byte_and_data(self.dev_addr, SSD1306_CONTROL_DATA, data)
-        //     .await;
+            .i2c_write_data(self.dev_addr, &self.write_buf)
+            .await
+        // let _ = self
+        //     .i2c0
+        //     .blocking_write(self.dev_addr, &self.write_buf[..=data.len()]);
     }
 
     // ------------------------------------------------------------------------
@@ -292,12 +347,12 @@ impl<'d> SSD1306<'d> {
     //     self.send_cmd(cmd).await;
     // }
 
-    pub async fn disable_horizontal_scrolling(&mut self) {
+    pub async fn disable_scrolling(&mut self) {
         let cmd = [SSD1306_SET_SCROLL_DISABLE];
         self.send_cmd(cmd).await;
     }
 
-    pub async fn enable_horizontal_scrolling(&mut self) {
+    pub async fn enable_scrolling(&mut self) {
         let cmd = [SSD1306_SET_SCROLL_ENABLE];
         self.send_cmd(cmd).await;
     }
@@ -308,10 +363,10 @@ impl<'d> SSD1306<'d> {
 
     pub async fn set_column_start_addr_for_page_mode(&mut self, start_addr: u8) {
         // -- lower nibble
-        let cmd = [start_addr & 0xf];
+        let cmd = [SSD1306_SET_LO_COL_START_ADDR | (start_addr & 0xf)];
         self.send_cmd(cmd).await;
         // -- higher nibble
-        let cmd = [SSD1306_SET_HIGH_COL_START_ADDR | (start_addr >> 4)];
+        let cmd = [SSD1306_SET_HI_COL_START_ADDR | (start_addr >> 4)];
         self.send_cmd(cmd).await;
     }
 
@@ -366,7 +421,7 @@ impl<'d> SSD1306<'d> {
         let ratio = if ratio < MUX_RATIO_MIN {
             MUX_RATIO_MIN
         } else if ratio > MUX_RATIO_MAX {
-            MUX_RATIO_MIN
+            MUX_RATIO_MAX
         } else {
             ratio
         };
@@ -448,20 +503,46 @@ impl<'d> SSD1306<'d> {
 
     pub async fn init(&mut self) {
         // self.nop().await;
-        // self.i2cpio
-        //     .i2c_write(
-        //         self.dev_addr,
-        //         [
-        //             SSD1306_CONTROL_COMMAND,
-        //             SSD1306_NOP,
-        //             SSD1306_CONTROL_COMMAND,
-        //             SSD1306_SET_DISP_OFF,
-        //             SSD1306_CONTROL_COMMAND,
-        //             SSD1306_SET_MUX_RATIO,
-        //             SSD1306_HEIGHT - 1,
-        //         ],
-        //     )
-        //     .await;
+        // self.nop().await;
+        // let init_cmds = [
+        //     SSD1306_SET_DISP_OFF,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_MUX_RATIO,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_HEIGHT - 1,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_DISP_OFFSET,
+        //     0,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_DISP_START_LINE | 0,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_SEG_REMAP | 1,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_COM_OUT_SCAN_DIR_REMAPPED,
+        //     COM_PIN_CFG_SEQ_NO_LR_REMAP,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_CONTRAST,
+        //     CONTRAST_DEFAULT,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_ENTIRE_ON_RAM,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_DISP_NORM,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_DISP_CLK_DIV,
+        //     OSCILLATOR_FREQUENCY_DEFAULT << 4 | DIVIDE_RATIO_DEFAULT,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_MEM_MODE,
+        //     MEMORY_ADDRESS_MODE_PAGE,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_SCROLL_DISABLE,
+        //     SSD1306_CO_COMMAND,
+        //     SSD1306_SET_CHARGE_PUMP,
+        //     CHARGE_PUMP_ENABLE,
+        //     SSD1306_NCO_COMMAND,
+        //     SSD1306_SET_DISP_ON,
+        // ];
+        // self.send_cmds(init_cmds).await;
+        self.nop().await;
         self.nop().await;
         self.set_display_off().await;
         self.set_mux_ratio(SSD1306_HEIGHT - 1).await;
@@ -471,27 +552,49 @@ impl<'d> SSD1306<'d> {
         self.set_com_out_scan_dir(true).await;
         self.set_com_pin_cfg(false, false).await;
         self.set_contrast(CONTRAST_DEFAULT).await;
+        // self.set_precharge(2, 2).await;
+        // self.set_vcomh_deselect_level(SSD1306VcomhDeselectLevel::Auto)
+        //     .await;
         self.disable_entire_on().await;
         self.set_display_normal().await;
         self.set_disp_clk_div(OSCILLATOR_FREQUENCY_DEFAULT, DIVIDE_RATIO_DEFAULT)
             .await; // -- standard oscillator frequency, divide ratio = 1
         self.cmd_set_mem_addr_mode(SSD1306MemoryAddressMode::Page)
             .await;
-        self.disable_horizontal_scrolling().await;
+        // self.set_page_addr_start_for_page_mode(0).await;
+        // self.set_column_start_addr_for_page_mode(0).await;
+        self.disable_scrolling().await;
         self.enable_charge_pump().await;
         self.set_display_on().await;
     }
 
-    pub async fn render<const LEN: usize>(&mut self, data: [u8; LEN], area: &SSD1306RenderArea) {
+    pub async fn render(&mut self, data: &[u8], area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
         self.set_column_start_addr_for_page_mode(area.start_col)
             .await;
-        let mut i = 0;
-        for chunk in data.chunks(128) {
-            self.set_page_addr_start_for_page_mode(i).await;
-            self.send_data(chunk).await;
-            i = i + 1;
+        let chunk_size = (area.end_col - area.start_col + 1) as usize;
+        let mut chuncks = data.chunks(chunk_size);
+        // defmt::debug!(
+        //     "rendering area {} {} {} {}, data len {}, chunk size {}",
+        //     area.start_col,
+        //     area.end_col,
+        //     area.start_page,
+        //     area.end_page,
+        //     data.len(),
+        //     chunk_size,
+        // );
+        for i in area.start_page..=area.end_page {
+            if let Some(chunk) = chuncks.nth(0) {
+                self.set_page_addr_start_for_page_mode(i).await;
+                self.send_data(chunk).await;
+            }
         }
+    }
+
+    pub async fn clear_display(&mut self, display_buf: &[u8]) {
+        self.disable_scrolling().await;
+        let frame_area = SSD1306RenderArea::new();
+        self.render(display_buf, &frame_area).await;
     }
 
     pub fn set_pixel(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
@@ -556,6 +659,10 @@ impl<'d> SSD1306<'d> {
             return (ch - ASCII_A + 1) as usize;
         } else if ch >= ASCII_0 && ch <= ASCII_9 {
             return (ch - ASCII_0 + 27) as usize;
+        } else if ch == ASCII_PLUS {
+            return 37;
+        } else if ch == ASCII_MINUS {
+            return 38;
         }
         0 // -- char not in font table: nothing / space
     }

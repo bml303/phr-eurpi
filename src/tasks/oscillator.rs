@@ -128,6 +128,7 @@ pub async fn oscillator_irq2_handler(mut irq2: Irq<'static, PIO1, 2>) {
 
 #[embassy_executor::task]
 pub async fn oscillator_irq1_handler(
+    //mut i2c1: I2c<'static, I2C1, I2cAsync>,
     mut irq1: Irq<'static, PIO1, 1>,
     mut sm1: StateMachine<'static, PIO1, 1>,
     mut sm2: StateMachine<'static, PIO1, 2>,
@@ -136,9 +137,9 @@ pub async fn oscillator_irq1_handler(
     info!("oscillator_irq1_handler started");
     // -- setup oscillator
     let sample_rate = SAMPLE_RATE_48KHZ;
-    //let frequency = 110.0;
+    let frequency = 110.0;
     //let frequency = 440.0;
-    let frequency = 880.0;
+    //let frequency = 880.0;
     //let frequency = 5000.0;
     let f = frequency / sample_rate;
     let mut out = [0.0; SAMPLE_BLOCK_SIZE];
@@ -181,6 +182,11 @@ pub async fn oscillator_irq1_handler(
         } else {
             sm2.tx().wait_push(data_out).await;
         }
+        // let dev_addr: u8 = 0x62;
+        // let data_byte_1 = ((sample >> 8) as u8);
+        // let data_byte_2 = ((sample & 0xff) as u8);
+        // let data_bytes = [data_byte_1, data_byte_2];
+        // let _ = i2c1.blocking_write(dev_addr, &data_bytes);
         yield_now().await;
     }
 }

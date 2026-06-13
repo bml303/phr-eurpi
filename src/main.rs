@@ -132,233 +132,6 @@ unsafe fn SWI_IRQ_5() {
 //     }
 // }
 
-// https://github.com/nvzqz/bad-rs/blob/master/src/never.rs
-mod bad {
-    pub(crate) type Never = <F as HasOutput>::Output;
-
-    pub trait HasOutput {
-        type Output;
-    }
-
-    impl<O> HasOutput for fn() -> O {
-        type Output = O;
-    }
-
-    type F = fn() -> !;
-}
-
-// Push a value to the inter-core FIFO, block until space is available
-#[inline(always)]
-pub(crate) fn fifo_write(value: u32) {
-    let sio = pac::SIO;
-    // Wait for the FIFO to have enough space
-    while !sio.fifo().st().read().rdy() {
-        cortex_m::asm::nop();
-    }
-    sio.fifo().wr().write_value(value);
-    // Fire off an event to the other core.
-    // This is required as the other core may be `wfe` (waiting for event)
-    cortex_m::asm::sev();
-}
-
-// Pop a value from inter-core FIFO, block until available
-#[inline(always)]
-fn fifo_read() -> u32 {
-    let sio = pac::SIO;
-    // Wait until FIFO has data
-    while !sio.fifo().st().read().vld() {
-        cortex_m::asm::nop();
-    }
-    sio.fifo().rd().read()
-}
-
-// Pop a value from inter-core FIFO, `wfe` until available
-#[inline(always)]
-#[allow(unused)]
-fn fifo_read_wfe() -> u32 {
-    let sio = pac::SIO;
-    // Wait until FIFO has data
-    while !sio.fifo().st().read().vld() {
-        cortex_m::asm::wfe();
-    }
-    sio.fifo().rd().read()
-}
-
-// Drain inter-core FIFO
-#[inline(always)]
-fn fifo_drain() {
-    let sio = pac::SIO;
-    while sio.fifo().st().read().vld() {
-        let _ = sio.fifo().rd().read();
-    }
-}
-
-#[inline(always)]
-unsafe fn install_stack_guard(stack_bottom: *mut usize) -> Result<(), ()> {
-    let core = unsafe { cortex_m::Peripherals::steal() };
-
-    // Fail if MPU is already configured
-    if core.MPU.ctrl.read() != 0 {
-        return Err(());
-    }
-
-    // The minimum we can protect is 32 bytes on a 32 byte boundary, so round up which will
-    // just shorten the valid stack range a tad.
-    let addr = (stack_bottom as u32 + 31) & !31;
-    // Mask is 1 bit per 32 bytes of the 256 byte range... clear the bit for the segment we want
-    let subregion_select = 0xff ^ (1 << ((addr >> 5) & 7));
-    unsafe {
-        core.MPU.ctrl.write(5); // enable mpu with background default map
-        core.MPU.rbar.write((addr & !0xff) | (1 << 4)); // set address and update RNR
-        core.MPU.rasr.write(
-            1 // enable region
-               | (0x7 << 1) // size 2^(7 + 1) = 256
-               | (subregion_select << 8)
-               | 0x10000000, // XN = disable instruction fetch; no other bits means no permissions
-        );
-    }
-    Ok(())
-}
-
-#[inline(always)]
-unsafe fn core1_setup(stack_bottom: *mut usize) {
-    unsafe {
-        if install_stack_guard(stack_bottom).is_err() {
-            // currently only happens if the MPU was already set up, which
-            // would indicate that the core is already in use from outside
-            // embassy, somehow. trap if so since we can't deal with that.
-            cortex_m::asm::udf();
-        }
-        interrupt::IO_IRQ_BANK0.disable();
-        interrupt::IO_IRQ_BANK0.set_priority(interrupt::Priority::P3);
-        interrupt::IO_IRQ_BANK0.enable();
-    }
-}
-
-// pub fn spawn_core1<F, const SIZE: usize>(
-//     _core1: Peri<'static, CORE1>,
-//     stack: &'static mut Stack<SIZE>,
-//     entry: F,
-// ) where
-//     F: FnOnce() -> bad::Never + Send + 'static,
-// {
-//     // The first two ignored `u64` parameters are there to take up all of the registers,
-//     // which means that the rest of the arguments are taken from the stack,
-//     // where we're able to put them from core 0.
-//     extern "C" fn core1_startup<F: FnOnce() -> bad::Never>(
-//         _: u64,
-//         _: u64,
-//         entry: *mut ManuallyDrop<F>,
-//         stack_bottom: *mut usize,
-//     ) -> ! {
-//         unsafe { core1_setup(stack_bottom) };
-
-//         let entry = unsafe { ManuallyDrop::take(&mut *entry) };
-
-//         // make sure the preceding read doesn't get reordered past the following fifo write
-//         compiler_fence(Ordering::SeqCst);
-
-//         unsafe { interrupt::SIO_IRQ_PROC1.enable() };
-
-//         entry()
-//     }
-
-//     // Reset the core
-//     let psm = pac::PSM;
-//     psm.frce_off().modify(|w| w.set_proc1(true));
-//     while !psm.frce_off().read().proc1() {
-//         cortex_m::asm::nop();
-//     }
-//     psm.frce_off().modify(|w| w.set_proc1(false));
-
-//     // The ARM AAPCS ABI requires 8-byte stack alignment.
-//     // #[align] on `struct Stack` ensures the bottom is aligned, but the top could still be
-//     // unaligned if the user chooses a stack size that's not multiple of 8.
-//     // So, we round down to the next multiple of 8.
-//     let stack_words = stack.mem.len() / 8 * 2;
-//     let mem = unsafe {
-//         core::slice::from_raw_parts_mut(stack.mem.as_mut_ptr() as *mut usize, stack_words)
-//     };
-
-//     // Set up the stack
-//     let mut stack_ptr = unsafe { mem.as_mut_ptr().add(mem.len()) };
-
-//     // We don't want to drop this, since it's getting moved to the other core.
-//     let mut entry = ManuallyDrop::new(entry);
-
-//     // Push the arguments to `core1_startup` onto the stack.
-//     unsafe {
-//         // Push `stack_bottom`.
-//         stack_ptr = stack_ptr.sub(1);
-//         stack_ptr.cast::<*mut usize>().write(mem.as_mut_ptr());
-
-//         // Push `entry`.
-//         stack_ptr = stack_ptr.sub(1);
-//         stack_ptr.cast::<*mut ManuallyDrop<F>>().write(&mut entry);
-//     }
-
-//     // Make sure the compiler does not reorder the stack writes after to after the
-//     // below FIFO writes, which would result in them not being seen by the second
-//     // core.
-//     //
-//     // From the compiler perspective, this doesn't guarantee that the second core
-//     // actually sees those writes. However, we know that the RP2040 doesn't have
-//     // memory caches, and writes happen in-order.
-//     compiler_fence(core::sync::atomic::Ordering::Release);
-
-//     let p = unsafe { cortex_m::Peripherals::steal() };
-//     let vector_table = p.SCB.vtor.read();
-
-//     // After reset, core 1 is waiting to receive commands over FIFO.
-//     // This is the sequence to have it jump to some code.
-//     let cmd_seq = [
-//         0,
-//         0,
-//         1,
-//         vector_table as usize,
-//         stack_ptr as usize,
-//         core1_startup::<F> as *const () as usize,
-//     ];
-
-//     let mut seq = 0;
-//     let mut fails = 0;
-//     loop {
-//         let cmd = cmd_seq[seq] as u32;
-//         if cmd == 0 {
-//             fifo_drain();
-//             cortex_m::asm::sev();
-//         }
-//         fifo_write(cmd);
-
-//         let response = fifo_read();
-//         if cmd == response {
-//             seq += 1;
-//         } else {
-//             seq = 0;
-//             fails += 1;
-//             if fails > 16 {
-//                 // The second core isn't responding, and isn't going to take the entrypoint
-//                 defmt::panic!("CORE1 not responding");
-//             }
-//         }
-//         if seq >= cmd_seq.len() {
-//             break;
-//         }
-//     }
-
-//     info!("core1 spawn completed");
-
-//     // // Wait until the other core has copied `entry` before returning.
-//     // fifo_read();
-
-//     // info!("core1 spawn FIFO read");
-
-//     // Enable fifo interrupt on CORE0 for `pend irq` functionality.
-//     unsafe { interrupt::SIO_IRQ_PROC1.enable() };
-
-//     info!("core1 spawn FIFO interrupt on core0 enabled");
-// }
-
 //#[embassy_executor::main]
 //async fn main(spawner: Spawner) {
 #[entry]
@@ -383,7 +156,7 @@ fn main() -> ! {
     // -- Display resources
     // -- ---------------------------------------------------------------------
 
-    // // -- i2c bus 0 is used for display
+    // -- i2c bus 0 is used for display
     // let sda_0 = p.PIN_0;
     // let scl_0 = p.PIN_1;
     // info!("Setting up i2c bus 0");
@@ -396,11 +169,11 @@ fn main() -> ! {
     // };
     // let i2c0 = i2c::I2c::new_async(p.I2C0, scl_0, sda_0, IrqsI2c0, i2c0_config);
 
-    // // -- display config
+    // -- display config
     // let interface = I2CDisplayInterface::new(i2c0);
-    // let display =
+    // let mut display =
     //     Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
-    // //display.init().unwrap();
+    // display.init().unwrap();
 
     // let text_style = MonoTextStyleBuilder::new()
     //     .font(&FONT_6X10)
@@ -417,8 +190,8 @@ fn main() -> ! {
     // info!("Setting up i2c bus 1");
     // let i2c1_config = {
     //     let mut i2c_config = I2cConfig::default();
-    //     //i2c_config.frequency = I2C1_BUS_FREQUENCY_400_KBIT;
-    //     i2c_config.frequency = I2C1_BUS_FREQUENCY_1_MBIT;
+    //     //i2c_config.frequency = I2C_BUS_FREQUENCY_400_KBIT;
+    //     i2c_config.frequency = I2C_BUS_FREQUENCY_1_MBIT;
     //     i2c_config.scl_pullup = true;
     //     i2c_config.sda_pullup = true;
     //     i2c_config
@@ -513,10 +286,14 @@ fn main() -> ! {
 
     let sda_pin = p.PIN_0;
     let scl_pin = p.PIN_1;
-    let dma_ch0 = dma::Channel::new(p.DMA_CH0, IrqsAdcPioDma);
-    let mut i2cpio = I2CPIO::new(sm0, Some(dma_ch0));
-    //let mut i2cpio = I2CPIO::new(sm0, None);
-    i2cpio.setup_i2c_pio(&mut common, sda_pin, scl_pin);
+    let mut i2cpio = I2CPIO::new(
+        &mut common,
+        sda_pin,
+        scl_pin,
+        sm0,
+        Some(dma::Channel::new(p.DMA_CH0, IrqsAdcPioDma)),
+    );
+    //let mut i2cpio = I2CPIO::new(&mut common, sda_pin, scl_pin, sm0, None);
 
     let Pio {
         mut common,
@@ -579,11 +356,14 @@ fn main() -> ! {
                     analog_out_4,
                     analog_out_5,
                     analog_out_6,
-                    &DISPLAY_CHANNEL,
+                    //display,
+                    //i2c0,
+                    i2cpio,
+                    //&DISPLAY_CHANNEL,
                 )));
                 // -- display
                 spawner_c1.spawn(unwrap!(pio_task_sm0_irq0(irq0)));
-                spawner_c1.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
+                // spawner_c1.spawn(unwrap!(display_task(i2cpio, &DISPLAY_CHANNEL)));
                 info!("All running on core1");
             });
         },
@@ -599,6 +379,7 @@ fn main() -> ! {
     // -- oscillator
     spawner_m.spawn(unwrap!(oscillator_irq2_handler(irq2)));
     spawner_m.spawn(unwrap!(oscillator_irq1_handler(
+        //i2c1,
         irq1,
         sm1,
         sm2,
@@ -662,7 +443,7 @@ fn main() -> ! {
     // });
 
     let executor0 = EXECUTOR_CORE0.init(Executor::new());
-    executor0.run(|spawner| {});
+    executor0.run(|spawner_lo| {});
 
     // -- spawn other tasks on core 0
     // let executor0 = EXECUTOR_CORE0.init(Executor::new());

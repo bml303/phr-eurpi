@@ -26,19 +26,27 @@ pub const SM_CLOCK_DIVIDER_4_MHZ: u32 = 4_000_000;
 pub struct I2CPIO<'d> {
     sm0: StateMachine<'d, PIO0, 0>,
     dma_ch: Option<DmaChannel<'d>>,
-    data_buf: [u32; 130],
+    data_buf: [u32; 34],
 }
 
 impl<'d> I2CPIO<'d> {
-    pub fn new(sm0: StateMachine<'d, PIO0, 0>, dma_ch: Option<DmaChannel<'d>>) -> Self {
-        I2CPIO {
+    pub fn new(
+        pio0: &mut Common<'d, PIO0>,
+        sda_pin: Peri<'d, impl PioPin>,
+        scl_pin: Peri<'d, impl PioPin>,
+        sm0: StateMachine<'d, PIO0, 0>,
+        dma_ch: Option<DmaChannel<'d>>,
+    ) -> Self {
+        let mut i2cpio = I2CPIO {
             sm0,
             dma_ch,
-            data_buf: [0; 130],
-        }
+            data_buf: [0; 34],
+        };
+        i2cpio.setup_i2c_pio(pio0, sda_pin, scl_pin);
+        i2cpio
     }
 
-    pub fn setup_i2c_pio(
+    fn setup_i2c_pio(
         &mut self,
         pio0: &mut Common<'d, PIO0>,
         sda_pin: Peri<'d, impl PioPin>,
@@ -56,7 +64,7 @@ impl<'d> I2CPIO<'d> {
                 pull block          side 1          ; -- 03 - load number of bytes to write from TX FIFO, SCL high
                 set pins, 0         side 1 [1]      ; -- 04 - START condition SDA to low, SCL high
                 set x, 7            side 1          ; -- 05 - write 8 bits, SCL high
-                out y, 16           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
+                out y, 24           side 1          ; -- 06 - number of bytes to write from OSR, SCL low
                 jmp y-- byte_loop   side 0 [2]      ; -- 07 - jump if y > 0 prior to decrement, SCL low
                 jmp entry_point     side 0          ; -- 08 - restart when zero bytes to write, SCL low
             byte_loop:
@@ -106,28 +114,15 @@ impl<'d> I2CPIO<'d> {
         self.sm0.set_enable(true);
     }
 
-    pub async fn i2c_write_byte_and_data(&mut self, dev_addr: u8, cmd_byte: u8, data: &[u8]) {
+    pub async fn i2c_write_data(&mut self, dev_addr: u8, data: &[u8]) {
         // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-        let no_of_bytes = (data.len() + 2) as u32;
+        let no_of_bytes = (data.len() + 1) as u32;
         //defmt::debug!("no_of_bytes is {}", no_of_bytes);
         let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
-        //let header = [dev_addr_write, byte];
-        self.data_buf[0] = (no_of_bytes << 16) | ((dev_addr_write as u32) << 8) | cmd_byte as u32;
-        if data.len() >= 1 {
-            self.data_buf[1] = (data[0] as u32) << 24;
-        }
-        if data.len() >= 2 {
-            self.data_buf[1] |= (data[1] as u32) << 16;
-        }
-        if data.len() >= 3 {
-            self.data_buf[1] |= (data[2] as u32) << 8;
-        }
-        if data.len() >= 4 {
-            self.data_buf[1] |= data[3] as u32;
-        }
-        let mut j = 2;
-        if data.len() >= 5 {
-            for i in (5..data.len()).step_by(4) {
+        self.data_buf[0] = (no_of_bytes << 8) | (dev_addr_write as u32);
+        let mut j = 1;
+        if data.len() > 0 {
+            for i in (0..data.len()).step_by(4) {
                 self.data_buf[j] = (data[i] as u32) << 24;
                 if i + 1 < data.len() {
                     self.data_buf[j] |= (data[i + 1] as u32) << 16;
@@ -149,65 +144,6 @@ impl<'d> I2CPIO<'d> {
         } else {
             for i in 0..j {
                 self.sm0.tx().wait_push(self.data_buf[i]).await;
-            }
-        }
-    }
-
-    pub async fn i2c_write_byte_and_data_v1<const LEN: usize>(
-        &mut self,
-        dev_addr: u8,
-        byte: u8,
-        data: [u8; LEN],
-    ) {
-        // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-        let no_of_bytes = (LEN + 2) as u32;
-        defmt::debug!("no_of_bytes is {}", no_of_bytes);
-        let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
-        //let header = [dev_addr_write, byte];
-        if let Some(dma_ch) = self.dma_ch.as_mut() {
-            self.sm0.tx().wait_push(no_of_bytes).await;
-            self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
-            self.sm0.tx().wait_push((byte as u32) << 24).await;
-            for i in 0..data.len() {
-                self.sm0.tx().wait_push((data[i] as u32) << 24).await;
-            }
-            // self.sm0.tx().dma_push(dma_ch, &[no_of_bytes], false).await;
-            // self.sm0.tx().dma_push(dma_ch, &header, false).await;
-            // self.sm0.tx().dma_push(dma_ch, &data, false).await;
-            // self.sm0.tx().dma_push(dma_ch, &[no_of_bytes], false).await;
-            // self.sm0.tx().dma_push(dma_ch, &header, false).await;
-            // self.sm0.tx().dma_push(dma_ch, &data, false).await;
-        } else {
-            // self.sm0.tx().wait_push((no_of_bytes[0] as u32) << 24).await;
-            // self.sm0.tx().wait_push((no_of_bytes[1] as u32) << 24).await;
-            // self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
-            // self.sm0.tx().wait_push((byte as u32) << 24).await;
-            // for byte in data {
-            //     self.sm0.tx().wait_push((byte as u32) << 24).await;
-            // }
-        }
-    }
-
-    pub async fn i2c_write_byte_and_data_len_u8<const LEN: usize>(
-        &mut self,
-        dev_addr: u8,
-        byte: u8,
-        data: [u8; LEN],
-    ) {
-        // -- prepare for I2C PIO: <no of bytes - device address - data byte 1 - data byte 2 - ...>
-        let no_of_bytes = (LEN + 2) as u8;
-        defmt::debug!("no_of_bytes is {}", no_of_bytes);
-        let dev_addr_write = dev_addr << 1; // -- 7 msb = device addr, 1 lsb 0 for write
-        let header = [no_of_bytes, dev_addr_write, byte];
-        if let Some(dma_ch) = self.dma_ch.as_mut() {
-            self.sm0.tx().dma_push(dma_ch, &header, false).await;
-            self.sm0.tx().dma_push(dma_ch, &data, false).await;
-        } else {
-            self.sm0.tx().wait_push((no_of_bytes as u32) << 24).await;
-            self.sm0.tx().wait_push((dev_addr_write as u32) << 24).await;
-            self.sm0.tx().wait_push((byte as u32) << 24).await;
-            for byte in data {
-                self.sm0.tx().wait_push((byte as u32) << 24).await;
             }
         }
     }
