@@ -70,9 +70,9 @@ use io::{
 };
 use tasks::{
     ChannelFrequencyType, ChannelInputsType, ChannelOscillatorType, I2C_BUS_FREQUENCY_1_MBIT,
-    I2C_BUS_FREQUENCY_100_KBIT, I2C_BUS_FREQUENCY_400_KBIT, display_task, inputs_task,
-    oscillator_irq1_handler, oscillator_irq2_handler, pio_task_sm3,
-    setup_oscillator_clock_pio_task, setup_oscillator_pio_task, setup_pio_task_sm3,
+    I2C_BUS_FREQUENCY_100_KBIT, I2C_BUS_FREQUENCY_400_KBIT, inputs_task, oscillator_irq1_handler,
+    oscillator_irq2_handler, pio_task_sm3, setup_oscillator_clock_pio_task,
+    setup_oscillator_pio_task, setup_pio_task_sm3,
 };
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");

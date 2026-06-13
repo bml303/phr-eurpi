@@ -13,6 +13,7 @@ use embassy_rp::{
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 use super::i2cpio::I2CPIO;
 
@@ -217,6 +218,36 @@ pub enum SSD1306Addr {
 pub struct SSD1306<'d> {
     i2cpio: I2CPIO<'d>,
     dev_addr: u8,
+    display_buf: [u8; SSD1306_BUF_LEN],
+}
+
+impl<'d> DrawTarget for SSD1306<'d> {
+    type Color = BinaryColor;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(coord, color) in pixels.into_iter() {
+            // Check if the pixel coordinates are out of bounds (negative or greater than
+            // (63,63)). `DrawTarget` implementation are required to discard any out of bounds
+            // pixels without returning an error or causing a panic.
+            Self::set_pixel_internal(
+                &mut self.display_buf,
+                coord.x as u8,
+                coord.y as u8,
+                color.is_on(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl<'d> OriginDimensions for SSD1306<'d> {
+    fn size(&self) -> Size {
+        Size::new(SSD1306_WIDTH as u32, SSD1306_HEIGHT as u32)
+    }
 }
 
 impl<'d> SSD1306<'d> {
@@ -225,7 +256,11 @@ impl<'d> SSD1306<'d> {
             SSD1306Addr::Default => SSD1306_I2C_ADDR_DEFAULT,
             SSD1306Addr::Secondary => SSD1306_I2C_ADDR_SECONDARY,
         };
-        Self { i2cpio, dev_addr }
+        Self {
+            i2cpio,
+            dev_addr,
+            display_buf: [0; SSD1306_BUF_LEN],
+        }
     }
 
     pub async fn send_cmd(&mut self, cmd_bytes: &[u8]) {
@@ -234,9 +269,13 @@ impl<'d> SSD1306<'d> {
             .await;
     }
 
-    pub async fn send_data(&mut self, data_bytes: &[u8]) {
+    pub async fn send_data(&mut self, start_index: usize, end_index: usize) {
         self.i2cpio
-            .i2c_write_byte_with_data(self.dev_addr, SSD1306_NCO_DATA, data_bytes)
+            .i2c_write_byte_with_data(
+                self.dev_addr,
+                SSD1306_NCO_DATA,
+                &self.display_buf[start_index..=end_index],
+            )
             .await;
     }
 
@@ -477,7 +516,7 @@ impl<'d> SSD1306<'d> {
         self.set_display_on().await;
     }
 
-    pub async fn render(&mut self, data: &[u8], area: &SSD1306RenderArea) {
+    pub async fn render(&mut self, area: &SSD1306RenderArea) {
         // -- update a portion of the display with a render area
         for i in area.start_page..=area.end_page {
             //defmt::debug!("sending chunk {}", i);
@@ -486,17 +525,32 @@ impl<'d> SSD1306<'d> {
                 .await;
             let start_index = i as usize * 128 + area.start_col as usize;
             let end_index = i as usize * 128 + area.end_col as usize;
-            self.send_data(&data[start_index..=end_index]).await;
+            self.send_data(start_index, end_index).await;
         }
     }
 
-    pub async fn clear_display(&mut self, display_buf: &[u8]) {
+    pub async fn clear_display(&mut self) {
         self.disable_scrolling().await;
         let frame_area = SSD1306RenderArea::new();
-        self.render(display_buf, &frame_area).await;
+        self.display_buf = [0; SSD1306_BUF_LEN];
+        self.render(&frame_area).await;
     }
 
-    pub fn set_pixel(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
+    pub fn set_pixel(&mut self, x: u8, y: u8, on: bool) {
+        Self::set_pixel_internal(&mut self.display_buf, x, y, on);
+    }
+
+    pub fn draw_line(&mut self, x0: u8, y0: u8, x1: u8, y1: u8, on: bool) {
+        Self::draw_line_internal(&mut self.display_buf, x0, y0, x1, y1, on);
+    }
+
+    pub fn write_string(&mut self, x: u8, y: u8, val: &str) {
+        Self::write_string_internal(&mut self.display_buf, x, y, val);
+    }
+
+    // -- internal functons
+
+    fn set_pixel_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
         let x = min(x, SSD1306_WIDTH);
         let y = min(y, SSD1306_HEIGHT);
         let bytes_per_row = SSD1306_WIDTH as usize;
@@ -510,7 +564,14 @@ impl<'d> SSD1306<'d> {
         buf[byte_idx] = byte;
     }
 
-    pub fn draw_line(buf: &mut [u8; SSD1306_BUF_LEN], x0: u8, y0: u8, x1: u8, y1: u8, on: bool) {
+    fn draw_line_internal(
+        buf: &mut [u8; SSD1306_BUF_LEN],
+        x0: u8,
+        y0: u8,
+        x1: u8,
+        y1: u8,
+        on: bool,
+    ) {
         let mut x0 = x0 as i32;
         let x1 = x1 as i32;
         let mut y0 = y0 as i32;
@@ -522,7 +583,7 @@ impl<'d> SSD1306<'d> {
         let mut err = dx + dy;
         let mut e2: i32;
         loop {
-            Self::set_pixel(buf, x0 as u8, y0 as u8, on);
+            Self::set_pixel_internal(buf, x0 as u8, y0 as u8, on);
             if x0 == x1 && y0 == y1 {
                 break;
             }
@@ -538,7 +599,7 @@ impl<'d> SSD1306<'d> {
         }
     }
 
-    pub fn get_font_index(ch: u8) -> usize {
+    fn get_font_index_internal(ch: u8) -> usize {
         if ch >= ASCII_A && ch <= ASCII_Z {
             return (ch - ASCII_A + 1) as usize;
         } else if ch >= ASCII_0 && ch <= ASCII_9 {
@@ -551,7 +612,7 @@ impl<'d> SSD1306<'d> {
         0 // -- char not in font table: nothing / space
     }
 
-    pub fn write_char(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, ch: u8) {
+    fn write_char_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, ch: u8) {
         // -- check bounds
         if x > SSD1306_WIDTH - 8 || y > SSD1306_HEIGHT - 8 {
             // -- do not attempt to write char if it's out of bounds
@@ -565,7 +626,7 @@ impl<'d> SSD1306<'d> {
         } else {
             ch
         };
-        let idx = Self::get_font_index(ch);
+        let idx = Self::get_font_index_internal(ch);
         let mut fb_idx = y as usize * 128 + x as usize;
         for i in 0..8 {
             buf[fb_idx] = FONT[idx * 8 + i];
@@ -573,7 +634,7 @@ impl<'d> SSD1306<'d> {
         }
     }
 
-    pub fn write_string(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, val: &str) {
+    fn write_string_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, val: &str) {
         // -- check bounds
         if x > SSD1306_WIDTH - 8 || y > SSD1306_HEIGHT - 8 {
             // -- do not attempt to write if it's out of bounds
@@ -582,7 +643,7 @@ impl<'d> SSD1306<'d> {
         let mut x = x;
         for ch in val.chars() {
             let ch = ch as u8;
-            Self::write_char(buf, x, y, ch);
+            Self::write_char_internal(buf, x, y, ch);
             x += 8;
         }
     }

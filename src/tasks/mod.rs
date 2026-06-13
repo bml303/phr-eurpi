@@ -3,13 +3,13 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 
 // mod analogout;
 mod digitalin;
-mod display;
+// mod display;
 mod inputs;
 mod oscillator;
 
 // pub use analogout::{pio_task_sm1, pwm_analog_out, setup_pio_task_sm1};
 pub use digitalin::{pio_task_sm3, setup_pio_task_sm3};
-pub use display::display_task;
+// pub use display::display_task;
 pub use inputs::inputs_task;
 pub use oscillator::{
     oscillator_irq1_handler, oscillator_irq2_handler, setup_oscillator_clock_pio_task,

@@ -139,10 +139,9 @@ pub async fn inputs_task(
     frequency_channel: &'static ChannelFrequencyType,
 ) {
     // -- perpare display
-    let mut display_buf: [u8; SSD1306_BUF_LEN] = [0; SSD1306_BUF_LEN];
     let mut ssd1306 = init_display(i2cpio).await;
-    ssd1306.clear_display(&display_buf).await;
-    let mut frame_area = SSD1306RenderArea::new();
+    ssd1306.clear_display().await;
+    let frame_area = SSD1306RenderArea::new();
     // frame_area.set_columns(0, 127);
     //SSD1306::write_string(&mut display_buf, 0, 0, "01234567890");
     //SSD1306::set_pixel(&mut display_buf, 0, 0, true);
@@ -150,13 +149,13 @@ pub async fn inputs_task(
     // display_buf[128 + 3] = 0xff;
     // display_buf[256 + 5] = 0xff;
     // display_buf[384 + 7] = 0xff;
-    SSD1306::draw_line(&mut display_buf, 0, 0, 127, 0, true);
-    SSD1306::draw_line(&mut display_buf, 0, 0, 0, 31, true);
-    SSD1306::draw_line(&mut display_buf, 0, 31, 127, 31, true);
-    SSD1306::draw_line(&mut display_buf, 127, 0, 127, 31, true);
-    SSD1306::write_string(&mut display_buf, 8, 8, "This gugus");
-    SSD1306::write_string(&mut display_buf, 8, 16, "  is happening");
-    ssd1306.render(&display_buf, &frame_area).await;
+    ssd1306.draw_line(0, 0, 127, 0, true);
+    ssd1306.draw_line(0, 0, 0, 31, true);
+    ssd1306.draw_line(0, 31, 127, 31, true);
+    ssd1306.draw_line(127, 0, 127, 31, true);
+    ssd1306.write_string(8, 8, "This gugus");
+    ssd1306.write_string(8, 16, "  is happening");
+    ssd1306.render(&frame_area).await;
 
     //let _ = display.write_char('A');
     //let _ = display.clear();
