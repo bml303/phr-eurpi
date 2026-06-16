@@ -37,7 +37,7 @@ const SSD1306_NCO_DATA: u8 = 0x40;
 const SSD1306_CO_COMMAND: u8 = 0x00;
 
 // commands (see datasheet)
-const SSD1306_SET_LO_COL_START_ADDR: u8 = 0x10;
+const SSD1306_SET_LO_COL_START_ADDR: u8 = 0x00;
 const SSD1306_SET_HI_COL_START_ADDR: u8 = 0x10;
 const SSD1306_SET_MEM_MODE: u8 = 0x20;
 const SSD1306_SET_COL_ADDR: u8 = 0x21;
@@ -116,6 +116,8 @@ const ASCII_A_LOWER: u8 = 97;
 const ASCII_Z_LOWER: u8 = 122;
 const ASCII_PLUS: u8 = 43;
 const ASCII_MINUS: u8 = 45;
+const CHAR_HEIGHT: u8 = 8;
+const CHAR_WIDTH: usize = 8;
 
 // -- vertical bitmaps, A-Z, 0-9. Each is 8 pixels high and wide
 // -- these are defined vertically to make them quick to copy to FB
@@ -174,7 +176,7 @@ pub enum SSD1306VcomhDeselectLevel {
     Auto,
 }
 
-pub struct SSD1306RenderArea {
+struct SSD1306RenderArea {
     start_col: u8,
     end_col: u8,
     start_page: u8,
@@ -183,26 +185,49 @@ pub struct SSD1306RenderArea {
 
 impl SSD1306RenderArea {
     pub fn new() -> Self {
-        let start_col: u8 = 0;
-        let end_col: u8 = SSD1306_WIDTH - 1;
-        let start_page: u8 = 0;
-        let end_page: u8 = SSD1306_NUM_PAGES - 1;
-        Self {
-            start_col,
-            end_col,
-            start_page,
-            end_page,
+        let mut area = Self {
+            start_col: 0,
+            end_col: 0,
+            start_page: 0,
+            end_page: 0,
+        };
+        area.reset_after_render();
+        area
+    }
+
+    pub fn maximize(&mut self) {
+        // -- seems absurd but is required for the calculation
+        // -- of the minimal render area on frame buffer updated
+        self.start_col = 0;
+        self.end_col = SSD1306_WIDTH - 1;
+        self.start_page = 0;
+        self.end_page = SSD1306_NUM_PAGES - 1;
+    }
+
+    pub fn reset_after_render(&mut self) {
+        // -- seems absurd but is required for the calculation
+        // -- of the minimal render area on frame buffer updated
+        self.start_col = SSD1306_WIDTH - 1;
+        self.end_col = 0;
+        self.start_page = SSD1306_NUM_PAGES - 1;
+        self.end_page = 0;
+    }
+
+    pub fn update_after_draw(&mut self, x_start: u8, x_end: u8, y_start: u8, y_end: u8) {
+        if self.start_col > x_start {
+            self.start_col = x_start;
         }
-    }
-
-    pub fn set_columns(&mut self, start_col: u8, end_col: u8) {
-        self.start_col = start_col;
-        self.end_col = end_col;
-    }
-
-    pub fn set_pages(&mut self, start_page: u8, end_page: u8) {
-        self.start_page = start_page;
-        self.end_page = end_page;
+        if self.end_col < x_end {
+            self.end_col = x_end;
+        }
+        let start_page = y_start / SSD1306_PAGE_HEIGHT;
+        if self.start_page > start_page {
+            self.start_page = start_page;
+        }
+        let end_page = y_end / SSD1306_PAGE_HEIGHT;
+        if self.end_page < end_page {
+            self.end_page = end_page;
+        }
     }
 }
 
@@ -215,30 +240,38 @@ pub enum SSD1306Addr {
 
 // }
 
+pub enum SSD1306Error {
+    OutOfBounds((i32, i32)),
+}
+
 pub struct SSD1306<'d> {
     i2cpio: I2CPIO<'d>,
     dev_addr: u8,
-    display_buf: [u8; SSD1306_BUF_LEN],
+    frame_buf: [u8; SSD1306_BUF_LEN],
+    render_area: SSD1306RenderArea,
 }
 
 impl<'d> DrawTarget for SSD1306<'d> {
     type Color = BinaryColor;
-    type Error = core::convert::Infallible;
+    //type Error = core::convert::Infallible;
+    type Error = SSD1306Error;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
         for Pixel(coord, color) in pixels.into_iter() {
-            // Check if the pixel coordinates are out of bounds (negative or greater than
-            // (63,63)). `DrawTarget` implementation are required to discard any out of bounds
-            // pixels without returning an error or causing a panic.
-            Self::set_pixel_internal(
-                &mut self.display_buf,
-                coord.x as u8,
-                coord.y as u8,
-                color.is_on(),
-            );
+            // -- check whether the pixel coordinates are out of bounds,
+            // -- e.g. negative or greater than display size
+            if coord.x < 0
+                || coord.x >= SSD1306_WIDTH as i32
+                || coord.y < 0
+                || coord.y >= SSD1306_HEIGHT as i32
+            {
+                defmt::error!("Pixel out of bounds: x {}, y {}", coord.x, coord.y);
+                return Err(SSD1306Error::OutOfBounds((coord.x, coord.y)));
+            }
+            self.set_pixel(coord.x as u8, coord.y as u8, color.is_on());
         }
         Ok(())
     }
@@ -259,7 +292,8 @@ impl<'d> SSD1306<'d> {
         Self {
             i2cpio,
             dev_addr,
-            display_buf: [0; SSD1306_BUF_LEN],
+            frame_buf: [0; SSD1306_BUF_LEN],
+            render_area: SSD1306RenderArea::new(),
         }
     }
 
@@ -274,7 +308,7 @@ impl<'d> SSD1306<'d> {
             .i2c_write_byte_with_data(
                 self.dev_addr,
                 SSD1306_NCO_DATA,
-                &self.display_buf[start_index..=end_index],
+                &self.frame_buf[start_index..=end_index],
             )
             .await;
     }
@@ -516,62 +550,51 @@ impl<'d> SSD1306<'d> {
         self.set_display_on().await;
     }
 
-    pub async fn render(&mut self, area: &SSD1306RenderArea) {
+    pub async fn render(&mut self) {
+        // defmt::debug!(
+        //     "start_col {}, end_col {}, start_page {}, end_page {}",
+        //     self.render_area.start_col,
+        //     self.render_area.end_col,
+        //     self.render_area.start_page,
+        //     self.render_area.end_page
+        // );
         // -- update a portion of the display with a render area
-        for i in area.start_page..=area.end_page {
+        for i in self.render_area.start_page..=self.render_area.end_page {
             //defmt::debug!("sending chunk {}", i);
             self.set_page_addr_start_for_page_mode(i).await;
-            self.set_column_start_addr_for_page_mode(area.start_col)
+            self.set_column_start_addr_for_page_mode(self.render_area.start_col)
                 .await;
-            let start_index = i as usize * 128 + area.start_col as usize;
-            let end_index = i as usize * 128 + area.end_col as usize;
+            let start_index = i as usize * 128 + self.render_area.start_col as usize;
+            let end_index = i as usize * 128 + self.render_area.end_col as usize;
+            // defmt::debug!("start_index {}, end_index {}", start_index, end_index);
             self.send_data(start_index, end_index).await;
         }
+        self.render_area.reset_after_render();
     }
 
     pub async fn clear_display(&mut self) {
         self.disable_scrolling().await;
-        let frame_area = SSD1306RenderArea::new();
-        self.display_buf = [0; SSD1306_BUF_LEN];
-        self.render(&frame_area).await;
+        self.frame_buf = [0; SSD1306_BUF_LEN];
+        self.render_area.maximize();
+        self.render().await;
     }
 
     pub fn set_pixel(&mut self, x: u8, y: u8, on: bool) {
-        Self::set_pixel_internal(&mut self.display_buf, x, y, on);
+        let x = min(x, SSD1306_WIDTH - 1);
+        let y = min(y, SSD1306_HEIGHT - 1);
+        let bytes_per_row = SSD1306_WIDTH as usize;
+        // -- update frame buffer
+        let byte_idx = (y as usize / 8) * bytes_per_row + x as usize;
+        if on {
+            self.frame_buf[byte_idx] |= 1 << (y % 8);
+        } else {
+            self.frame_buf[byte_idx] &= !(1 << (y % 8));
+        }
+        // -- update render area
+        self.render_area.update_after_draw(x, x, y, y);
     }
 
     pub fn draw_line(&mut self, x0: u8, y0: u8, x1: u8, y1: u8, on: bool) {
-        Self::draw_line_internal(&mut self.display_buf, x0, y0, x1, y1, on);
-    }
-
-    pub fn write_string(&mut self, x: u8, y: u8, val: &str) {
-        Self::write_string_internal(&mut self.display_buf, x, y, val);
-    }
-
-    // -- internal functons
-
-    fn set_pixel_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, on: bool) {
-        let x = min(x, SSD1306_WIDTH);
-        let y = min(y, SSD1306_HEIGHT);
-        let bytes_per_row = SSD1306_WIDTH as usize;
-        let byte_idx = (y as usize / 8) * bytes_per_row + x as usize;
-        let mut byte = buf[byte_idx];
-        if on {
-            byte |= 1 << (y % 8);
-        } else {
-            byte &= !(1 << (y % 8));
-        }
-        buf[byte_idx] = byte;
-    }
-
-    fn draw_line_internal(
-        buf: &mut [u8; SSD1306_BUF_LEN],
-        x0: u8,
-        y0: u8,
-        x1: u8,
-        y1: u8,
-        on: bool,
-    ) {
         let mut x0 = x0 as i32;
         let x1 = x1 as i32;
         let mut y0 = y0 as i32;
@@ -583,7 +606,7 @@ impl<'d> SSD1306<'d> {
         let mut err = dx + dy;
         let mut e2: i32;
         loop {
-            Self::set_pixel_internal(buf, x0 as u8, y0 as u8, on);
+            self.set_pixel(x0 as u8, y0 as u8, on);
             if x0 == x1 && y0 == y1 {
                 break;
             }
@@ -599,7 +622,47 @@ impl<'d> SSD1306<'d> {
         }
     }
 
-    fn get_font_index_internal(ch: u8) -> usize {
+    pub fn write_string(&mut self, x: u8, y: u8, val: &str) {
+        // -- check bounds
+        if x > SSD1306_WIDTH - 8 || y > SSD1306_HEIGHT - 8 {
+            // -- do not attempt to write if it's out of bounds
+            return;
+        }
+        let mut x_inc = x;
+        for ch in val.chars() {
+            let ch = ch as u8;
+            self.write_char(x_inc, y, ch);
+            x_inc += CHAR_WIDTH as u8;
+        }
+        self.render_area
+            .update_after_draw(x, x_inc, y, y + CHAR_HEIGHT);
+        //self.render_area.maximize();
+    }
+
+    fn write_char(&mut self, x: u8, y: u8, ch: u8) {
+        // -- check bounds
+        if x > SSD1306_WIDTH - CHAR_HEIGHT || y > SSD1306_HEIGHT - CHAR_HEIGHT {
+            // -- do not attempt to write char if it's out of bounds
+            return;
+        }
+        // -- only write on Y row boundaries (every 8 vertical pixels)
+        // -- which happens to be a page in the frame buffer
+        let page = (y / CHAR_HEIGHT) as usize;
+        // -- toupper
+        let ch = if ch >= ASCII_A_LOWER && ch <= ASCII_Z_LOWER {
+            ch - (ASCII_A_LOWER - ASCII_A)
+        } else {
+            ch
+        };
+        let idx = Self::get_font_index(ch);
+        let mut fb_idx = page * SSD1306_WIDTH as usize + x as usize;
+        for i in 0..8 {
+            self.frame_buf[fb_idx] = FONT[idx * CHAR_WIDTH + i];
+            fb_idx += 1;
+        }
+    }
+
+    fn get_font_index(ch: u8) -> usize {
         if ch >= ASCII_A && ch <= ASCII_Z {
             return (ch - ASCII_A + 1) as usize;
         } else if ch >= ASCII_0 && ch <= ASCII_9 {
@@ -610,41 +673,5 @@ impl<'d> SSD1306<'d> {
             return 38;
         }
         0 // -- char not in font table: nothing / space
-    }
-
-    fn write_char_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, ch: u8) {
-        // -- check bounds
-        if x > SSD1306_WIDTH - 8 || y > SSD1306_HEIGHT - 8 {
-            // -- do not attempt to write char if it's out of bounds
-            return;
-        }
-        // -- only write on Y row boundaries (every 8 vertical pixels)
-        let y = y / 8;
-        // -- toupper
-        let ch = if ch >= ASCII_A_LOWER && ch <= ASCII_Z_LOWER {
-            ch - (ASCII_A_LOWER - ASCII_A)
-        } else {
-            ch
-        };
-        let idx = Self::get_font_index_internal(ch);
-        let mut fb_idx = y as usize * 128 + x as usize;
-        for i in 0..8 {
-            buf[fb_idx] = FONT[idx * 8 + i];
-            fb_idx += 1;
-        }
-    }
-
-    fn write_string_internal(buf: &mut [u8; SSD1306_BUF_LEN], x: u8, y: u8, val: &str) {
-        // -- check bounds
-        if x > SSD1306_WIDTH - 8 || y > SSD1306_HEIGHT - 8 {
-            // -- do not attempt to write if it's out of bounds
-            return;
-        }
-        let mut x = x;
-        for ch in val.chars() {
-            let ch = ch as u8;
-            Self::write_char_internal(buf, x, y, ch);
-            x += 8;
-        }
     }
 }

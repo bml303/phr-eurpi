@@ -153,7 +153,7 @@ pub async fn inputs_task(
     ssd1306.clear_display().await;
 
     let thin_stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-    let thick_stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 2);
+    // let thick_stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 2);
     let border_stroke = PrimitiveStyleBuilder::new()
         .stroke_color(BinaryColor::On)
         .stroke_width(1)
@@ -165,7 +165,7 @@ pub async fn inputs_task(
         .into_styled(border_stroke)
         .draw(&mut ssd1306);
 
-    let yoffset = 6;
+    let yoffset = 7;
     let _ = Triangle::new(
         Point::new(100, 16 + yoffset),
         Point::new(100 + 16, 16 + yoffset),
@@ -192,26 +192,20 @@ pub async fn inputs_task(
         Alignment::Left,
     )
     .draw(&mut ssd1306);
-    let frame_area = SSD1306RenderArea::new();
-    ssd1306.render(&frame_area).await;
+    ssd1306.render().await;
 
-    // frame_area.set_columns(0, 127);
-    //SSD1306::write_string(&mut display_buf, 0, 0, "01234567890");
-    //SSD1306::set_pixel(&mut display_buf, 0, 0, true);
-    // display_buf[0] = 0xff;
-    // display_buf[128 + 3] = 0xff;
-    // display_buf[256 + 5] = 0xff;
-    // display_buf[384 + 7] = 0xff;
+    // ssd1306.write_string(10, 8, "01234567890");
+    // ssd1306.set_pixel(100, 20, true);
+    // ssd1306.set_pixel(101, 21, true);
+    // ssd1306.set_pixel(102, 22, true);
     // ssd1306.draw_line(0, 0, 127, 0, true);
     // ssd1306.draw_line(0, 0, 0, 31, true);
     // ssd1306.draw_line(0, 31, 127, 31, true);
     // ssd1306.draw_line(127, 0, 127, 31, true);
     // ssd1306.write_string(8, 8, "This gugus");
     // ssd1306.write_string(8, 16, "  is happening");
-    // ssd1306.render(&frame_area).await;
+    ssd1306.render().await;
 
-    //let _ = display.write_char('A');
-    //let _ = display.clear();
     // -- prepare analog out values
     analog_out_1.set_duty_cycle_percent(0);
     analog_out_2.set_duty_cycle_percent(0);
