@@ -25,10 +25,10 @@ impl Default for Mpc4725DeviceAddress {
 }
 
 impl Mpc4725DeviceAddress {
-    const DEVICE_ADDR_DEFAULT: u16 = 0x62;
-    const DEVICE_ADDR_SECONDARY: u16 = 0x63;
+    pub const DEVICE_ADDR_DEFAULT: u16 = 0x62;
+    pub const DEVICE_ADDR_SECONDARY: u16 = 0x63;
 
-    fn value(&self) -> u16 {
+    pub fn value(&self) -> u16 {
         match *self {
             Self::Default => Self::DEVICE_ADDR_DEFAULT,
             Self::Secondary => Self::DEVICE_ADDR_SECONDARY,

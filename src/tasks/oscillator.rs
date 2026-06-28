@@ -14,7 +14,11 @@ use embassy_rp::{
 };
 use embassy_time::{Duration, Ticker, Timer, WithTimeout};
 
-use crate::audio::oscillator::sine_oscillator::SineOscillator;
+use crate::audio::oscillator::{
+    oscillator::{Oscillator, OscillatorShape},
+    sine_oscillator::SineOscillator,
+    string_synth_oscillator::StringSynthOscillator,
+};
 use crate::io::i2c::mpc4725::*;
 
 use super::{
@@ -23,9 +27,13 @@ use super::{
     SAMPLE_BLOCK_SIZE,
     SAMPLE_RATE_24KHZ,
     SAMPLE_RATE_48KHZ,
+    SAMPLE_RATE_96KHZ,
     //SM_CLOCK_DIVIDER_1_6_MHZ,
     SM_CLOCK_DIVIDER_4_MHZ,
+    SM_CLOCK_DIVIDER_8_MHZ,
+    SM_CLOCK_DIVIDER_11_150_KHZ,
     SM_CLOCK_DIVIDER_48_KHZ,
+    SM_CLOCK_DIVIDER_96_KHZ,
 };
 
 // -- ---------------------------------------------------------------------
@@ -108,7 +116,9 @@ pub fn setup_oscillator_pio_task<'d>(
     cfg.set_jmp_pin(&sda_pin);
     //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kHz
     // -- bus speed 1 MHz with 4 PIO clock cycles for I2C each high/low interval
-    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ);
+    // cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ);
+    //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_8_MHZ);
+    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_11_150_KHZ);
     cfg.out_sticky = true;
     cfg.shift_out.auto_fill = true;
     cfg.shift_out.direction = ShiftDirection::Left;
@@ -140,20 +150,26 @@ pub async fn oscillator_irq1_handler(
     // -- setup oscillator
     let sample_rate = SAMPLE_RATE_48KHZ;
     //let frequency = 110.0;
-    //let frequency = 440.0;
+    let frequency = 440.0;
     //let frequency = 880.0;
-    let frequency = 5000.0;
+    //let frequency = 1000.0;
+    //let frequency = 4400.0;
+    //let frequency = 5000.0;
+    //let frequency = 10000.0;
     let mut f = frequency / sample_rate;
-    let mut out = [0.0; SAMPLE_BLOCK_SIZE];
-    let mut osc = SineOscillator::new();
+    let mut sample_buf = [0.0; SAMPLE_BLOCK_SIZE];
+    // let mut osc = SineOscillator::new();
+    // osc.init();
+    // osc.render(f, &mut sample_buf);
+    let mut osc = Oscillator::new();
     osc.init();
-    //let every_nanos = (1_000_000_000f32 / sample_rate) as u64;
-    //let every_nanos = (400_000_000f32 / sample_rate) as u64;
-    //debug!("pio_task_sm2: Every nanos is {}", every_nanos);
-    //let mut ticker = Ticker::every(Duration::from_nanos(every_nanos));
+    osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
+    // let registration: [f32; 7] = [1.0, 0.0, 0.5, 0.0, 0.2, 0.0, 0.5];
+    // let mut osc = StringSynthOscillator::new();
+    // osc.init();
+    // osc.render(f, &registration, 1.0, &mut sample_buf);
     sm1.set_enable(true);
     sm2.set_enable(true);
-    osc.render(f, &mut out);
     let mut sample_index = 0;
     loop {
         irq1.wait().await;
@@ -162,49 +178,158 @@ pub async fn oscillator_irq1_handler(
                 defmt::debug!("Setting frequency {}", frequency);
                 f = frequency as f32 / sample_rate;
                 osc.init();
-                osc.render(f, &mut out);
+                osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
+                //osc.render(f, &mut sample_buf);
+                //osc.render(f, &registration, 1.0, &mut sample_buf);
                 sample_index = 0;
             }
         }
-        // -- prepare sample
-        let sample = ((out[sample_index] + 1f32) * 4096f32 / 2f32) as u16;
+        // let mut sample_buf = [0.0; 1];
+        // osc.render(f, &mut sample_buf);
+        // let sample = sample_buf[0];
+        // -- get sample from buffer and refill sample buffer if necessary
+        let sample = sample_buf[sample_index] * 4096f32;
         sample_index += 1;
         if sample_index >= SAMPLE_BLOCK_SIZE {
-            osc.render(f, &mut out);
+            //osc.render(f, &mut sample_buf);
+            osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
+            //osc.render(f, &registration, 1.0, &mut sample_buf);
             sample_index = 0;
         }
-        // -- prepare I2C message for MPC4725 I2C PIO: <no of bytes - addr - data byte 1 - data byte 2>
-        // -- this is for cfg.shift_out.threshold = 8;
-        // let no_of_bytes = 3u8;
-        // let dev_addr_write: u8 = 0b11000100;
-        // let data_byte_1 = (sample >> 8) as u8;
-        // let data_byte_2 = (sample & 0xff) as u8;
-        // if let Some(dma_ch) = dma_ch.as_mut() {
-        //     let data_out = [no_of_bytes, dev_addr_write, data_byte_1, data_byte_2];
-        //     sm2.tx().dma_push(dma_ch, &data_out, false).await;
-        // } else {
-        //     sm2.tx().wait_push((no_of_bytes as u32) << 24).await;
-        //     sm2.tx().wait_push((dev_addr_write as u32) << 24).await;
-        //     sm2.tx().wait_push((data_byte_1 as u32) << 24).await;
-        //     sm2.tx().wait_push((data_byte_2 as u32) << 24).await;
-        // }
-        // -- this is for cfg.shift_out.threshold = 32;
-        let no_of_bytes = 3u32;
-        let addr: u32 = 0b11000100;
-        let data_byte_1 = ((sample >> 8) as u8) as u32;
-        let data_byte_2 = ((sample & 0xff) as u8) as u32;
-        let data_out = (no_of_bytes << 24) | (addr << 16) | (data_byte_1 << 8) | data_byte_2;
-        if let Some(dma_ch) = dma_ch.as_mut() {
-            sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+        // -- prepare DAC value from sample
+        // -- positive values go to first DAC
+        // -- negative values go to second DAC
+        // -- zero values go to both DACs
+        let (dac_val_1, dac_val_2) = if sample > 0.0 {
+            (sample as u16, 0)
+        } else if sample < 0.0 {
+            (0, -sample as u16)
         } else {
-            sm2.tx().wait_push(data_out).await;
-        }
+            (0, 0)
+        };
+
+        write_to_dac(
+            &mut sm2,
+            &mut dma_ch,
+            Mpc4725DeviceAddress::Default,
+            dac_val_1,
+        )
+        .await;
+        write_to_dac(
+            &mut sm2,
+            &mut dma_ch,
+            Mpc4725DeviceAddress::Secondary,
+            dac_val_2,
+        )
+        .await;
+
+        // -- write to DAC 1
+        // if dac_val_1 > 0 {
+        //     write_to_dac(
+        //         &mut sm2,
+        //         &mut dma_ch,
+        //         Mpc4725DeviceAddress::Default,
+        //         dac_val_1,
+        //     )
+        //     .await;
+        // } else if dac_val_2 > 0 {
+        //     write_to_dac(
+        //         &mut sm2,
+        //         &mut dma_ch,
+        //         Mpc4725DeviceAddress::Secondary,
+        //         dac_val_2,
+        //     )
+        //     .await;
+        // }
+
+        // -- write to DAC 1
+        // write_value_to_dac(
+        //     &mut sm2,
+        //     &mut dma_ch,
+        //     Mpc4725DeviceAddress::Default,
+        //     dac_val_1,
+        //     &mut dac_1_is_non_zero,
+        // )
+        // .await;
+        // // -- write to DAC 2
+        // write_value_to_dac(
+        //     &mut sm2,
+        //     &mut dma_ch,
+        //     Mpc4725DeviceAddress::Secondary,
+        //     dac_val_2,
+        //     &mut dac_2_is_non_zero,
+        // )
+        // .await;
+
+        // let dev_addr: u8 = Mpc4725DeviceAddress::Default.value() as u8;
+        // let data_byte_1 = (dac_val_1 >> 8) as u8;
+        // let data_byte_2 = (dac_val_1 & 0xff) as u8;
+        // let data_bytes = [data_byte_1, data_byte_2];
+        // let _ = i2c1.blocking_write(dev_addr, &data_bytes);
+
+        // let dev_addr: u8 = Mpc4725DeviceAddress::Secondary.value() as u8;
+        // let data_byte_1 = (dac_val_2 >> 8) as u8;
+        // let data_byte_2 = (dac_val_2 & 0xff) as u8;
+        // let data_bytes = [data_byte_1, data_byte_2];
+        // let _ = i2c1.blocking_write(dev_addr, &data_bytes);
+
         // let dev_addr: u8 = 0x62;
         // let data_byte_1 = ((sample >> 8) as u8);
         // let data_byte_2 = ((sample & 0xff) as u8);
         // let data_bytes = [data_byte_1, data_byte_2];
         // let _ = i2c1.blocking_write(dev_addr, &data_bytes);
         //yield_now().await;
+    }
+}
+
+#[inline(always)]
+async fn write_value_to_dac(
+    sm2: &mut StateMachine<'static, PIO1, 2>,
+    dma_ch: &mut Option<DmaChannel<'static>>,
+    dev_addr: Mpc4725DeviceAddress,
+    dac_val: u16,
+    dac_is_non_zero: &mut bool,
+) {
+    let dac_val = if dac_val != 0 {
+        *dac_is_non_zero = true;
+        Some(dac_val)
+    } else if *dac_is_non_zero {
+        *dac_is_non_zero = false;
+        Some(0)
+    } else {
+        None
+    };
+    if let Some(dac_val) = dac_val {
+        let dac_addr = (dev_addr.value() as u32) << 1;
+        let data_byte_1 = ((dac_val >> 8) as u8) as u32;
+        let data_byte_2 = ((dac_val & 0xff) as u8) as u32;
+        let no_of_bytes = 3u32;
+        let data_out = (no_of_bytes << 24) | (dac_addr << 16) | (data_byte_1 << 8) | data_byte_2;
+        sm2.tx().wait_push(data_out).await;
+        // if let Some(dma_ch) = dma_ch.as_mut() {
+        //     sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+        // } else {
+        //     sm2.tx().wait_push(data_out).await;
+        // }
+    }
+}
+
+#[inline(always)]
+async fn write_to_dac(
+    sm2: &mut StateMachine<'static, PIO1, 2>,
+    dma_ch: &mut Option<DmaChannel<'static>>,
+    dev_addr: Mpc4725DeviceAddress,
+    dac_val: u16,
+) {
+    let dac_addr = (dev_addr.value() as u32) << 1;
+    let data_byte_1 = ((dac_val >> 8) as u8) as u32;
+    let data_byte_2 = ((dac_val & 0xff) as u8) as u32;
+    let no_of_bytes = 3u32;
+    let data_out = (no_of_bytes << 24) | (dac_addr << 16) | (data_byte_1 << 8) | data_byte_2;
+    if let Some(dma_ch) = dma_ch.as_mut() {
+        sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+    } else {
+        sm2.tx().wait_push(data_out).await;
     }
 }
 

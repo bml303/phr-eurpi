@@ -186,7 +186,7 @@ fn main() -> ! {
     // -- I2C bus for peripherals
     // -- ---------------------------------------------------------------------
 
-    // -- i2c bus 1 is used for I2C peripherals
+    // // -- i2c bus 1 is used for I2C peripherals
     // let sda_1 = p.PIN_2;
     // let scl_1 = p.PIN_3;
     // info!("Setting up i2c bus 1");
@@ -288,7 +288,7 @@ fn main() -> ! {
 
     let sda_pin = p.PIN_0;
     let scl_pin = p.PIN_1;
-    let mut i2cpio = I2CPIO::new(
+    let i2cpio = I2CPIO::new(
         &mut common,
         sda_pin,
         scl_pin,
@@ -307,27 +307,15 @@ fn main() -> ! {
         mut sm3,
         ..
     } = Pio::new(p.PIO1, IrqsAdcPioDma);
-    // // -- PIO for analog outs
-    // setup_pio_task_sm1(
-    //     &mut common,
-    //     &mut sm1,
-    //     p.PIN_16, // -- out 3
-    //     p.PIN_17, // -- out 4
-    //     p.PIN_18, // -- out 5
-    //     p.PIN_19, // -- out 6
-    //     p.PIN_20, // -- out 2
-    //     p.PIN_21, // -- out 1
-    // );
-    //let dma_ch1 = dma::Channel::new(p.DMA_CH1, IrqsAdcPioDma);
-    //info!("pio_task_sm1 is setup");
     // -- PIO for oscillator clock
     setup_oscillator_clock_pio_task(&mut common, &mut sm1);
-    // -- PIO for MPC4725 DAC
+    info!("pio_task_sm1 for oscillator clock is setup");
+    // -- PIO for MPC4725 DAC oscillator
     let sda_1 = p.PIN_2;
     let scl_1 = p.PIN_3;
     setup_oscillator_pio_task(&mut common, &mut sm2, sda_1, scl_1);
     let dma_ch2 = dma::Channel::new(p.DMA_CH2, IrqsAdcPioDma);
-    info!("pio_task_sm2 is setup");
+    info!("pio_task_sm2 for MPC4725 DAC oscillator is setup");
     // -- PIO for digital in (triggers)
     setup_pio_task_sm3(&mut common, &mut sm3, p.PIN_22);
     info!("pio_task_sm3 is setup");
