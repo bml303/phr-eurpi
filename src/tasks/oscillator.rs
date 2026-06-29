@@ -153,8 +153,9 @@ pub async fn oscillator_irq1_handler(
     //let frequency = 5000.0;
     //let frequency = 10000.0;
     let mut sample_buf = [0.0; SAMPLE_BUF_SIZE];
+    let endindex = (SAMPLE_BUF_SIZE / frequency as usize);
 
-    let mut osc = match Oscillator::new(Waveform::Sine, frequency, sample_rate) {
+    let mut osc = match Oscillator::new(Waveform::Saw, frequency, sample_rate) {
         Ok(osc) => osc,
         Err(e) => {
             error!("Failed to create oscillator: {}", e);
@@ -163,7 +164,8 @@ pub async fn oscillator_irq1_handler(
     };
     debug!("Start rendering");
     let render_start = Instant::now();
-    osc.fill_buffer(&mut sample_buf);
+
+    osc.fill_buffer(&mut sample_buf[0..endindex]);
     debug!(
         "Rendering done in {} ms",
         &render_start.elapsed().as_millis()
@@ -198,9 +200,8 @@ pub async fn oscillator_irq1_handler(
         // osc.render(f, &mut sample_buf);
         // let sample = sample_buf[0];
         // -- get sample from buffer and refill sample buffer if necessary
-        // let sample = unsafe { SAMPLE_BUF[sample_index] } * 4096f32;
         let sample = sample_buf[sample_index];
-        sample_index = (sample_index + 1) % SAMPLE_BUF_SIZE;
+        sample_index = (sample_index + 1) % endindex;
         // sample_index += 1;
         // if sample_index >= SAMPLE_BUF_SIZE {
         //     sample_index = 0;
