@@ -139,9 +139,9 @@ bind_interrupts!(struct IrqsI2c1 {
 #[entry]
 fn main() -> ! {
     // -- set up for clock frequency of 200 MHz
-    //let config = Config::new(ClockConfig::system_freq(200_000_000).unwrap());
+    let config = Config::new(ClockConfig::system_freq(200_000_000).unwrap());
     // -- set up for default clock frequency of 125 MHz
-    let config = Config::default();
+    //let config = Config::default();
 
     // -- init pico and get peripherals
     let p = embassy_rp::init(config);

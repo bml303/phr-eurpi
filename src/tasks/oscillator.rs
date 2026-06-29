@@ -12,7 +12,7 @@ use embassy_rp::{
     },
     pio_programs::clock_divider::calculate_pio_clock_divider,
 };
-use embassy_time::{Duration, Ticker, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
 
 use crate::audio::oscillator::{
     oscillator::{Oscillator, OscillatorShape},
@@ -22,19 +22,12 @@ use crate::audio::oscillator::{
 use crate::io::i2c::mpc4725::*;
 
 use super::{
-    ChannelFrequencyType,
-    ChannelOscillatorType,
-    SAMPLE_BLOCK_SIZE,
-    SAMPLE_RATE_24KHZ,
-    SAMPLE_RATE_48KHZ,
-    SAMPLE_RATE_96KHZ,
-    //SM_CLOCK_DIVIDER_1_6_MHZ,
-    SM_CLOCK_DIVIDER_4_MHZ,
-    SM_CLOCK_DIVIDER_8_MHZ,
-    SM_CLOCK_DIVIDER_11_150_KHZ,
-    SM_CLOCK_DIVIDER_48_KHZ,
-    SM_CLOCK_DIVIDER_96_KHZ,
+    ChannelFrequencyType, ChannelOscillatorType, SAMPLE_BLOCK_SIZE, SAMPLE_RATE_24KHZ,
+    SAMPLE_RATE_48KHZ, SAMPLE_RATE_50KHZ, SAMPLE_RATE_96KHZ, SM_CLOCK_DIVIDER_8_MHZ,
+    SM_CLOCK_DIVIDER_11_150_KHZ, SM_CLOCK_DIVIDER_13_600_KHZ, SM_CLOCK_DIVIDER_50_KHZ,
 };
+
+const SAMPLE_BUF_SIZE: usize = 50000;
 
 // -- ---------------------------------------------------------------------
 // -- SM1 - oscillator trigger
@@ -44,7 +37,7 @@ pub fn setup_oscillator_clock_pio_task<'d>(
     pio: &mut Common<'d, PIO1>,
     sm1: &mut StateMachine<'d, PIO1, 1>,
 ) {
-    // -- continouously trigger irq 1 -> delivers 48 kHz clock
+    // -- continouously trigger irq 1 -> delivers 50 kHz clock
     let prg = pio_asm!(
         r"
         .wrap_target
@@ -56,7 +49,7 @@ pub fn setup_oscillator_clock_pio_task<'d>(
     let mut cfg = PioConfig::default();
     let prg = pio.load_program(&prg.program);
     cfg.use_program(&prg, &[]);
-    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_48_KHZ);
+    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_50_KHZ);
     sm1.set_config(&cfg);
 }
 
@@ -116,9 +109,11 @@ pub fn setup_oscillator_pio_task<'d>(
     cfg.set_jmp_pin(&sda_pin);
     //cfg.clock_divider = calculate_pio_clock_divider(SM2_CLOCK_DIVIDER_1_6_MHZ); // -- bus speed 400 kHz
     // -- bus speed 1 MHz with 4 PIO clock cycles for I2C each high/low interval
-    // cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ);
+    //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_4_MHZ);
     //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_8_MHZ);
-    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_11_150_KHZ);
+    //cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_11_150_KHZ);
+    // -- bus speed 3.4 MHz with 4 PIO clock cycles for I2C each high/low interval
+    cfg.clock_divider = calculate_pio_clock_divider(SM_CLOCK_DIVIDER_13_600_KHZ);
     cfg.out_sticky = true;
     cfg.shift_out.auto_fill = true;
     cfg.shift_out.direction = ShiftDirection::Left;
@@ -148,7 +143,7 @@ pub async fn oscillator_irq1_handler(
 ) {
     info!("oscillator_irq1_handler started");
     // -- setup oscillator
-    let sample_rate = SAMPLE_RATE_48KHZ;
+    let sample_rate = SAMPLE_RATE_50KHZ;
     //let frequency = 110.0;
     let frequency = 440.0;
     //let frequency = 880.0;
@@ -156,75 +151,146 @@ pub async fn oscillator_irq1_handler(
     //let frequency = 4400.0;
     //let frequency = 5000.0;
     //let frequency = 10000.0;
+    let blocks = (sample_rate / (SAMPLE_BLOCK_SIZE as f32)) as usize;
     let mut f = frequency / sample_rate;
-    let mut sample_buf = [0.0; SAMPLE_BLOCK_SIZE];
+    let mut sample_buf = [0.0; SAMPLE_BUF_SIZE];
     // let mut osc = SineOscillator::new();
     // osc.init();
-    // osc.render(f, &mut sample_buf);
+    // debug!("Start rendering");
+    // let render_start = Instant::now();
+    // //osc.render(f, &mut sample_buf);
+    // for n in 0..blocks {
+    //     let start_index = n * SAMPLE_BLOCK_SIZE;
+    //     let end_index = start_index + SAMPLE_BLOCK_SIZE;
+    //     osc.render(f, &mut sample_buf[start_index..end_index]);
+    // }
+    // debug!(
+    //     "Rendering done in {} ms",
+    //     &render_start.elapsed().as_millis()
+    // );
     let mut osc = Oscillator::new();
     osc.init();
-    osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
+    let render_start = Instant::now();
+    debug!("Start rendering");
+    for n in 0..blocks {
+        let start_index = n * SAMPLE_BLOCK_SIZE;
+        let end_index = start_index + SAMPLE_BLOCK_SIZE;
+        osc.render(
+            f,
+            1.0,
+            None,
+            &mut sample_buf[start_index..end_index],
+            OscillatorShape::SquareTriangle,
+            false,
+        );
+    }
+    debug!(
+        "Rendering done in {} ms",
+        &render_start.elapsed().as_millis()
+    );
     // let registration: [f32; 7] = [1.0, 0.0, 0.5, 0.0, 0.2, 0.0, 0.5];
     // let mut osc = StringSynthOscillator::new();
     // osc.init();
     // osc.render(f, &registration, 1.0, &mut sample_buf);
+    let mut dac_1_is_non_zero = true;
+    let mut dac_2_is_non_zero = true;
     sm1.set_enable(true);
     sm2.set_enable(true);
     let mut sample_index = 0;
+    //let mut ticker = embassy_time::Ticker::every(Duration::from_nanos(20833));
     loop {
         irq1.wait().await;
-        if frequency_channel.len() > 0 {
-            if let Ok(frequency) = frequency_channel.try_receive() {
-                defmt::debug!("Setting frequency {}", frequency);
-                f = frequency as f32 / sample_rate;
-                osc.init();
-                osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
-                //osc.render(f, &mut sample_buf);
-                //osc.render(f, &registration, 1.0, &mut sample_buf);
-                sample_index = 0;
-            }
-        }
+        // if frequency_channel.len() > 0 {
+        //     if let Ok(frequency) = frequency_channel.try_receive() {
+        //         defmt::debug!("Setting frequency {}", frequency);
+        //         f = frequency as f32 / sample_rate;
+        //         osc.init();
+        //         osc.render(
+        //             f,
+        //             1.0,
+        //             None,
+        //             &mut sample_buf,
+        //             OscillatorShape::SquareTriangle,
+        //             false,
+        //         );
+        //         //osc.render(f, &mut sample_buf);
+        //         //osc.render(f, &registration, 1.0, &mut sample_buf);
+        //         sample_index = 0;
+        //     }
+        // }
         // let mut sample_buf = [0.0; 1];
         // osc.render(f, &mut sample_buf);
         // let sample = sample_buf[0];
         // -- get sample from buffer and refill sample buffer if necessary
-        let sample = sample_buf[sample_index] * 4096f32;
-        sample_index += 1;
-        if sample_index >= SAMPLE_BLOCK_SIZE {
-            //osc.render(f, &mut sample_buf);
-            osc.render(f, 1.0, None, &mut sample_buf, OscillatorShape::Saw, false);
-            //osc.render(f, &registration, 1.0, &mut sample_buf);
-            sample_index = 0;
-        }
+        // let sample = unsafe { SAMPLE_BUF[sample_index] } * 4096f32;
+        let sample = sample_buf[sample_index];
+        sample_index = (sample_index + 1) % SAMPLE_BUF_SIZE;
+        // sample_index += 1;
+        // if sample_index >= SAMPLE_BUF_SIZE {
+        //     sample_index = 0;
+        // }
+        //sample_index = (sample_index + 1) % SAMPLE_BUF_SIZE;
+        // if sample_index >= SAMPLE_BUF_SIZE {
+        //     sample_index = 0;
+        //     //debug!("Sample buf wrap: {}", &start.elapsed().as_millis());
+        //     //start = embassy_time::Instant::now();
+        // }
+
+        // if sample_index >= SAMPLE_BLOCK_SIZE {
+        //     //osc.render(f, &mut sample_buf);
+        //     osc.render(
+        //         f,
+        //         1.0,
+        //         None,
+        //         &mut sample_buf,
+        //         OscillatorShape::SquareTriangle,
+        //         false,
+        //     );
+        //     //osc.render(f, &registration, 1.0, &mut sample_buf);
+        //     sample_index = 0;
+        // }
         // -- prepare DAC value from sample
         // -- positive values go to first DAC
         // -- negative values go to second DAC
         // -- zero values go to both DACs
         let (dac_val_1, dac_val_2) = if sample > 0.0 {
-            (sample as u16, 0)
+            ((sample * 4096f32) as u16, 0)
         } else if sample < 0.0 {
-            (0, -sample as u16)
+            (0, (-sample * 4096f32) as u16)
         } else {
             (0, 0)
         };
 
-        write_to_dac(
-            &mut sm2,
-            &mut dma_ch,
-            Mpc4725DeviceAddress::Default,
-            dac_val_1,
-        )
-        .await;
-        write_to_dac(
-            &mut sm2,
-            &mut dma_ch,
-            Mpc4725DeviceAddress::Secondary,
-            dac_val_2,
-        )
-        .await;
+        // if sample_index % 2 == 0 {
+        //     write_to_dacs(
+        //         &mut sm2,
+        //         &mut dma_ch,
+        //         Mpc4725DeviceAddress::Default,
+        //         dac_val_1,
+        //         Mpc4725DeviceAddress::Secondary,
+        //         dac_val_2,
+        //     )
+        //     .await;
+        // }
 
-        // -- write to DAC 1
+        // write_to_dac(
+        //     &mut sm2,
+        //     &mut dma_ch,
+        //     Mpc4725DeviceAddress::Default,
+        //     dac_val_1,
+        // )
+        // .await;
+        // write_to_dac(
+        //     &mut sm2,
+        //     &mut dma_ch,
+        //     Mpc4725DeviceAddress::Secondary,
+        //     dac_val_2,
+        // )
+        // .await;
+        //ticker.next().await;
+
         // if dac_val_1 > 0 {
+        //     // -- write to DAC 1
         //     write_to_dac(
         //         &mut sm2,
         //         &mut dma_ch,
@@ -233,6 +299,7 @@ pub async fn oscillator_irq1_handler(
         //     )
         //     .await;
         // } else if dac_val_2 > 0 {
+        //     // -- write to DAC 2
         //     write_to_dac(
         //         &mut sm2,
         //         &mut dma_ch,
@@ -241,27 +308,42 @@ pub async fn oscillator_irq1_handler(
         //     )
         //     .await;
         // }
+        //
 
-        // -- write to DAC 1
-        // write_value_to_dac(
+        // -- write to DAC 1 & DAC 2
+        // write_values_to_dacs(
         //     &mut sm2,
         //     &mut dma_ch,
         //     Mpc4725DeviceAddress::Default,
         //     dac_val_1,
         //     &mut dac_1_is_non_zero,
-        // )
-        // .await;
-        // // -- write to DAC 2
-        // write_value_to_dac(
-        //     &mut sm2,
-        //     &mut dma_ch,
         //     Mpc4725DeviceAddress::Secondary,
         //     dac_val_2,
         //     &mut dac_2_is_non_zero,
         // )
         // .await;
 
-        // let dev_addr: u8 = Mpc4725DeviceAddress::Default.value() as u8;
+        // -- write to DAC 2
+        write_value_to_dac(
+            &mut sm2,
+            &mut dma_ch,
+            Mpc4725DeviceAddress::Secondary,
+            dac_val_2,
+            &mut dac_2_is_non_zero,
+        )
+        .await;
+        // -- write to DAC 1
+        write_value_to_dac(
+            &mut sm2,
+            &mut dma_ch,
+            Mpc4725DeviceAddress::Default,
+            dac_val_1,
+            &mut dac_1_is_non_zero,
+        )
+        .await;
+
+        // let dev_addr: u8 = Mpc4725DeviceAddress::
+        // Default.value() as u8;
         // let data_byte_1 = (dac_val_1 >> 8) as u8;
         // let data_byte_2 = (dac_val_1 & 0xff) as u8;
         // let data_bytes = [data_byte_1, data_byte_2];
@@ -283,10 +365,51 @@ pub async fn oscillator_irq1_handler(
 }
 
 #[inline(always)]
+async fn write_values_to_dacs(
+    sm2: &mut StateMachine<'static, PIO1, 2>,
+    dma_ch: &mut Option<DmaChannel<'static>>,
+    dac_1_addr: Mpc4725DeviceAddress,
+    dac_1_val: u16,
+    dac_1_is_non_zero: &mut bool,
+    dac_2_addr: Mpc4725DeviceAddress,
+    dac_2_val: u16,
+    dac_2_is_non_zero: &mut bool,
+) {
+    let dac_1_val = if dac_1_val != 0 {
+        *dac_1_is_non_zero = true;
+        Some(dac_1_val)
+    } else if *dac_1_is_non_zero {
+        *dac_1_is_non_zero = false;
+        Some(0)
+    } else {
+        None
+    };
+    let dac_2_val = if dac_2_val != 0 {
+        *dac_2_is_non_zero = true;
+        Some(dac_2_val)
+    } else if *dac_2_is_non_zero {
+        *dac_2_is_non_zero = false;
+        Some(0)
+    } else {
+        None
+    };
+
+    if let Some(dac_1_val) = dac_1_val
+        && let Some(dac_2_val) = dac_2_val
+    {
+        write_to_both_dacs(sm2, dma_ch, dac_1_addr, dac_1_val, dac_2_addr, dac_2_val).await;
+    } else if let Some(dac_1_val) = dac_1_val {
+        write_to_dac(sm2, dma_ch, dac_1_addr, dac_1_val).await;
+    } else if let Some(dac_2_val) = dac_2_val {
+        write_to_dac(sm2, dma_ch, dac_2_addr, dac_2_val).await;
+    }
+}
+
+#[inline(always)]
 async fn write_value_to_dac(
     sm2: &mut StateMachine<'static, PIO1, 2>,
     dma_ch: &mut Option<DmaChannel<'static>>,
-    dev_addr: Mpc4725DeviceAddress,
+    dac_addr: Mpc4725DeviceAddress,
     dac_val: u16,
     dac_is_non_zero: &mut bool,
 ) {
@@ -300,17 +423,12 @@ async fn write_value_to_dac(
         None
     };
     if let Some(dac_val) = dac_val {
-        let dac_addr = (dev_addr.value() as u32) << 1;
-        let data_byte_1 = ((dac_val >> 8) as u8) as u32;
-        let data_byte_2 = ((dac_val & 0xff) as u8) as u32;
-        let no_of_bytes = 3u32;
-        let data_out = (no_of_bytes << 24) | (dac_addr << 16) | (data_byte_1 << 8) | data_byte_2;
-        sm2.tx().wait_push(data_out).await;
-        // if let Some(dma_ch) = dma_ch.as_mut() {
-        //     sm2.tx().dma_push(dma_ch, &[data_out], false).await;
-        // } else {
-        //     sm2.tx().wait_push(data_out).await;
-        // }
+        let data_out = get_tx_fifo_value(dac_addr, dac_val);
+        if let Some(dma_ch) = dma_ch.as_mut() {
+            sm2.tx().dma_push(dma_ch, &[data_out], false).await;
+        } else {
+            sm2.tx().wait_push(data_out).await;
+        }
     }
 }
 
@@ -318,19 +436,49 @@ async fn write_value_to_dac(
 async fn write_to_dac(
     sm2: &mut StateMachine<'static, PIO1, 2>,
     dma_ch: &mut Option<DmaChannel<'static>>,
-    dev_addr: Mpc4725DeviceAddress,
+    dac_addr: Mpc4725DeviceAddress,
     dac_val: u16,
 ) {
-    let dac_addr = (dev_addr.value() as u32) << 1;
-    let data_byte_1 = ((dac_val >> 8) as u8) as u32;
-    let data_byte_2 = ((dac_val & 0xff) as u8) as u32;
-    let no_of_bytes = 3u32;
-    let data_out = (no_of_bytes << 24) | (dac_addr << 16) | (data_byte_1 << 8) | data_byte_2;
+    // -- DAC 1
+    let data_out = get_tx_fifo_value(dac_addr, dac_val);
+    // -- push the data to the TX FIFO
     if let Some(dma_ch) = dma_ch.as_mut() {
         sm2.tx().dma_push(dma_ch, &[data_out], false).await;
     } else {
         sm2.tx().wait_push(data_out).await;
     }
+}
+
+#[inline(always)]
+async fn write_to_both_dacs(
+    sm2: &mut StateMachine<'static, PIO1, 2>,
+    dma_ch: &mut Option<DmaChannel<'static>>,
+    dac_1_addr: Mpc4725DeviceAddress,
+    dac_1_val: u16,
+    dac_2_addr: Mpc4725DeviceAddress,
+    dac_2_val: u16,
+) {
+    // -- DAC 1
+    let data_out_1 = get_tx_fifo_value(dac_1_addr, dac_1_val);
+    // -- DAC 2
+    let data_out_2 = get_tx_fifo_value(dac_2_addr, dac_2_val);
+    // -- push the data to the TX FIFO
+    if let Some(dma_ch) = dma_ch.as_mut() {
+        sm2.tx()
+            .dma_push(dma_ch, &[data_out_1, data_out_2], false)
+            .await;
+    } else {
+        sm2.tx().wait_push(data_out_1).await;
+        sm2.tx().wait_push(data_out_2).await;
+    }
+}
+
+#[inline(always)]
+fn get_tx_fifo_value(dac_addr: Mpc4725DeviceAddress, dac_val: u16) -> u32 {
+    let dac_addr = (dac_addr.value() as u32) << 1;
+    let data_byte_1 = ((dac_val >> 8) as u8) as u32;
+    let data_byte_2 = ((dac_val & 0xff) as u8) as u32;
+    (3 << 24) | (dac_addr << 16) | (data_byte_1 << 8) | data_byte_2
 }
 
 // #[embassy_executor::task]
