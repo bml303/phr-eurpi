@@ -14,11 +14,12 @@ use embassy_rp::{
 };
 use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
 
-use crate::audio::oscillator::{
-    oscillator::{Oscillator, OscillatorShape},
-    sine_oscillator::SineOscillator,
-    string_synth_oscillator::StringSynthOscillator,
-};
+// use crate::audio::oscillator::{
+//     oscillator::{Oscillator, OscillatorShape},
+//     sine_oscillator::SineOscillator,
+//     string_synth_oscillator::StringSynthOscillator,
+// };
+use crate::audio::oscillator::{Oscillator, Waveform};
 use crate::io::i2c::mpc4725::*;
 
 use super::{
@@ -151,47 +152,22 @@ pub async fn oscillator_irq1_handler(
     //let frequency = 4400.0;
     //let frequency = 5000.0;
     //let frequency = 10000.0;
-    let blocks = (sample_rate / (SAMPLE_BLOCK_SIZE as f32)) as usize;
-    let mut f = frequency / sample_rate;
     let mut sample_buf = [0.0; SAMPLE_BUF_SIZE];
-    // let mut osc = SineOscillator::new();
-    // osc.init();
-    // debug!("Start rendering");
-    // let render_start = Instant::now();
-    // //osc.render(f, &mut sample_buf);
-    // for n in 0..blocks {
-    //     let start_index = n * SAMPLE_BLOCK_SIZE;
-    //     let end_index = start_index + SAMPLE_BLOCK_SIZE;
-    //     osc.render(f, &mut sample_buf[start_index..end_index]);
-    // }
-    // debug!(
-    //     "Rendering done in {} ms",
-    //     &render_start.elapsed().as_millis()
-    // );
-    let mut osc = Oscillator::new();
-    osc.init();
-    let render_start = Instant::now();
+
+    let mut osc = match Oscillator::new(Waveform::Sine, frequency, sample_rate) {
+        Ok(osc) => osc,
+        Err(e) => {
+            error!("Failed to create oscillator: {}", e);
+            return;
+        }
+    };
     debug!("Start rendering");
-    for n in 0..blocks {
-        let start_index = n * SAMPLE_BLOCK_SIZE;
-        let end_index = start_index + SAMPLE_BLOCK_SIZE;
-        osc.render(
-            f,
-            1.0,
-            None,
-            &mut sample_buf[start_index..end_index],
-            OscillatorShape::SquareTriangle,
-            false,
-        );
-    }
+    let render_start = Instant::now();
+    osc.fill_buffer(&mut sample_buf);
     debug!(
         "Rendering done in {} ms",
         &render_start.elapsed().as_millis()
     );
-    // let registration: [f32; 7] = [1.0, 0.0, 0.5, 0.0, 0.2, 0.0, 0.5];
-    // let mut osc = StringSynthOscillator::new();
-    // osc.init();
-    // osc.render(f, &registration, 1.0, &mut sample_buf);
     let mut dac_1_is_non_zero = true;
     let mut dac_2_is_non_zero = true;
     sm1.set_enable(true);
